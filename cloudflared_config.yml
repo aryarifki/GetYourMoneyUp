@@ -1,0 +1,11 @@
+ Cloudflare Tunnel configuration
+# Tempatkan di ~/.cloudflared/config.yml setelah tunnel create
+
+tunnel: <TUNNEL_ID>
+credentials-file: /home/<USER>/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: idx.yourdomain.com
+    service: http://localhost:8501
+  - service: http_status:404
+  
