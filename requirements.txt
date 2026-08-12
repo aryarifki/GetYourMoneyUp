@@ -11,3 +11,5 @@ streamlit>=1.35
 jupyter>=1.0
 ipykernel>=6.25
 psycopg2-binary>=2.9
+plotly>=5.0
+sqlalchemy>=2.0

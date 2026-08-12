@@ -1316,7 +1316,7 @@ with overview_tab:
         st.subheader("Price, Volume, and Signal Context")
         st.plotly_chart(
             interactive_price_context(price_df, broker_df, selected_ticker, window_start, analysis_ts),
-            use_container_width=True,
+            width="stretch",
             config={"displayModeBar": True, "scrollZoom": True},
         )
     with right:
@@ -1326,31 +1326,31 @@ with overview_tab:
             st.caption("No broker rows for the selected date.")
         else:
             st.caption("This table shows broker net buy or sell on the selected analysis date only.")
-            st.dataframe(style_table(broker_summary, money_cols=["Net on Analysis Date"]), use_container_width=True, hide_index=True, height=246)
+            st.dataframe(style_table(broker_summary, money_cols=["Net on Analysis Date"]), width="stretch", hide_index=True, height=246)
 
         perf = analysis.price_performance_table(selected_ticker)
         if not perf.empty:
             st.caption("Price Performance")
             perf = perf[perf["timeframe"].isin(["1D", "1W", "1M", "3M", "6M", "YTD"])]
             perf_view = perf.rename(columns={"timeframe": "Period", "return": "Return"})
-            st.dataframe(style_table(perf_view, pct_cols=["Return"]), use_container_width=True, hide_index=True, height=142)
+            st.dataframe(style_table(perf_view, pct_cols=["Return"]), width="stretch", hide_index=True, height=142)
 
     lower_left, lower_right = st.columns([1.1, 0.9])
     with lower_left:
         st.subheader("Smart-Money Daily Flow")
-        st.plotly_chart(interactive_smart_flow(daily_smart), use_container_width=True, config={"displayModeBar": True, "scrollZoom": True})
+        st.plotly_chart(interactive_smart_flow(daily_smart), width="stretch", config={"displayModeBar": True, "scrollZoom": True})
     with lower_right:
         st.subheader("Profile Net Flow")
         profile_view = profile_compact_table(profile_df)
         if profile_view.empty:
             st.caption("No profile flow for this window.")
         else:
-            st.dataframe(style_table(profile_view, money_cols=["Net"]), use_container_width=True, hide_index=True, height=246)
+            st.dataframe(style_table(profile_view, money_cols=["Net"]), width="stretch", hide_index=True, height=246)
             with st.expander("Broker detail by profile", expanded=False):
                 detail_view = profile_broker_detail_table(activity_window)
                 st.dataframe(
                     style_table(detail_view, money_cols=["Buy", "Sell", "Net", "Avg Value / Tx"]),
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     height=320,
                 )
@@ -1378,7 +1378,7 @@ with flow_tab:
     with c4:
         flow_mode = st.selectbox("Flow mode", ["Cumulative", "Daily"])
     st.caption("Cumulative mode sums broker net flow across the selected broker window. Daily mode shows each date separately.")
-    st.plotly_chart(interactive_broker_compare(activity_window, selected_brokers, flow_mode), use_container_width=True, config={"displayModeBar": True, "scrollZoom": True})
+    st.plotly_chart(interactive_broker_compare(activity_window, selected_brokers, flow_mode), width="stretch", config={"displayModeBar": True, "scrollZoom": True})
 
     left, right = st.columns([0.95, 1.05])
     with left:
@@ -1395,7 +1395,7 @@ with flow_tab:
         else:
             st.dataframe(
                 style_table(detail_view, money_cols=["Buy", "Sell", "Net", "Avg Value / Tx"]),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=360,
             )
@@ -1458,7 +1458,7 @@ with flow_tab:
                 st.caption("Exact broker-to-broker counterparties are unavailable. The flow chart below falls back to estimated same-day matching based on broker net buy and sell totals.")
             st.plotly_chart(
                 broker_distribution_sankey(dist, dist_end, distribution_data=distribution_api, top_n=8),
-                use_container_width=True,
+                width="stretch",
                 config={"displayModeBar": True, "scrollZoom": True},
             )
             st.caption("Broker Summary")
@@ -1474,7 +1474,7 @@ with flow_tab:
                         "Sell Avg": lambda v: "-" if pd.isna(v) else f"{float(v):,.0f}",
                     }
                 ),
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 height=320,
             )
@@ -1492,7 +1492,7 @@ with flow_tab:
             dist_view["Type"] = dist_view["Type"].map(participant_label)
             dist_view["Avg Value / Tx"] = dist_view.apply(lambda r: abs(float(r["Net"] or 0)) / max(float(r["Freq"] or 0), 1), axis=1)
             dist_view["Sub-type"] = dist_view.apply(broker_subtype, axis=1)
-            st.dataframe(style_table(dist_view, money_cols=["Buy", "Sell", "Net", "Avg Value / Tx"]), use_container_width=True, hide_index=True)
+            st.dataframe(style_table(dist_view, money_cols=["Buy", "Sell", "Net", "Avg Value / Tx"]), width="stretch", hide_index=True)
 
 with causality_tab:
     st.subheader("Causality Insight")
@@ -1524,7 +1524,7 @@ with causality_tab:
                 columns={"participant_type": "Participant", "best_lag": "Lag", "p_value": "P Value", "significant": "Significant"}
             )
             part_view["Participant"] = part_view["Participant"].map(english_text)
-            st.dataframe(part_view.style.format({"P Value": "{:.4f}"}), use_container_width=True, hide_index=True)
+            st.dataframe(part_view.style.format({"P Value": "{:.4f}"}), width="stretch", hide_index=True)
     with right:
         st.subheader("Top Broker Causality")
         broker_causality = analysis.causality_by_broker(selected_ticker, top_n=15, max_lags=5)
@@ -1534,7 +1534,7 @@ with causality_tab:
             broker_view = broker_causality.rename(
                 columns={"broker_code": "Broker", "best_lag": "Lag", "p_value": "P Value", "significant": "Significant"}
             )
-            st.dataframe(broker_view.style.format({"P Value": "{:.4f}"}), use_container_width=True, hide_index=True)
+            st.dataframe(broker_view.style.format({"P Value": "{:.4f}"}), width="stretch", hide_index=True)
 
 with validation_tab:
     st.subheader("Broker-Specific Return Validation")
@@ -1568,7 +1568,7 @@ with validation_tab:
                 "significant": "Significant",
             }
         )
-        st.dataframe(style_table(view, money_cols=["Avg Net Buy", "Total Net Buy"], pct_cols=["Mean Return", "Median Return", "Win Rate"]), use_container_width=True, hide_index=True)
+        st.dataframe(style_table(view, money_cols=["Avg Net Buy", "Total Net Buy"], pct_cols=["Mean Return", "Median Return", "Win Rate"]), width="stretch", hide_index=True)
 
     st.subheader("Accumulation Event Study")
     show_individual = st.toggle("Show individual event paths", value=False)
@@ -1580,7 +1580,7 @@ with validation_tab:
     )
     st.plotly_chart(
         interactive_event_ribbon(event_table, horizons=(1, 3, 5, 10), show_individual=show_individual),
-        use_container_width=True,
+        width="stretch",
         config={"displayModeBar": True, "scrollZoom": True},
     )
     if not event_table.empty:
@@ -1598,7 +1598,7 @@ with validation_tab:
             }
         )
         event_view["Signal"] = event_view["Signal"].map(fmt_signal)
-        st.dataframe(event_view, use_container_width=True, hide_index=True)
+        st.dataframe(event_view, width="stretch", hide_index=True)
 
 with screener_tab:
     st.subheader("Multi-Ticker Screener")
@@ -1611,7 +1611,7 @@ with screener_tab:
     else:
         st.dataframe(
             style_table(screener, money_cols=["Foreign Net (5D)"], pct_cols=["5D Return"]),
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
         )
 
@@ -1630,7 +1630,7 @@ with raw_tab:
         }
     )
     flow_view["Signal"] = flow_view["Signal"].map(fmt_signal)
-    st.dataframe(style_table(flow_view, money_cols=["Foreign Net", "Local Net", "Value"]), use_container_width=True, hide_index=True)
+    st.dataframe(style_table(flow_view, money_cols=["Foreign Net", "Local Net", "Value"]), width="stretch", hide_index=True)
 
     st.subheader("Broker Activity Rows")
     activity_view = activity_window[
@@ -1647,6 +1647,12 @@ with raw_tab:
         }
     )
     activity_view["Type"] = activity_view["Type"].map(participant_label)
-    st.dataframe(style_table(activity_view, money_cols=["Buy", "Sell", "Net"]), use_container_width=True, hide_index=True)
+    st.dataframe(style_table(activity_view, money_cols=["Buy", "Sell", "Net"]), width="stretch", hide_index=True)
 
-st.caption(f"Database: {storage.config.DB_PATH}")
+try:
+    from urllib.parse import urlparse
+    _u = urlparse(storage.config.DATABASE_URL)
+    _db_info = f"{_u.hostname or 'local'}/{_u.path.lstrip('/') or 'bandarmology'}"
+except Exception:
+    _db_info = "PostgreSQL"
+st.caption(f"Database: {_db_info}")

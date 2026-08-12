@@ -1,20 +1,23 @@
-"""PostgreSQL storage — the landing zone for the pipeline.
+"""PostgreSQL storage — SQLAlchemy edition.
 
-Replaces SQLite with psycopg2. All public function signatures stay identical
-so analysis.py, pipeline.py, and the dashboard need zero changes.
+Replaces raw psycopg2 connections with SQLAlchemy engine for full pandas
+compatibility (no more DBAPI2 warnings) while keeping bulk-upsert
+performance via raw psycopg2 connections from the SQLAlchemy pool.
 """
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Iterator
 
 import pandas as pd
 import psycopg2
 from psycopg2.extras import execute_values
+from sqlalchemy import create_engine, text
 
 from . import config
+
+# SQLAlchemy engine — pandas fully supports this as a connectable
+engine = create_engine(config.DATABASE_URL, pool_pre_ping=True)
 
 # ── schema ───────────────────────────────────────────────────────────────────
 _SCHEMA = """
@@ -72,7 +75,6 @@ CREATE TABLE IF NOT EXISTS runs (
     notes    TEXT
 );
 
--- indexes for fast dashboard reads
 CREATE INDEX IF NOT EXISTS idx_prices_ticker_date ON prices(ticker, date);
 CREATE INDEX IF NOT EXISTS idx_broker_flow_ticker_date ON broker_flow(ticker, date);
 CREATE INDEX IF NOT EXISTS idx_broker_activity_ticker_date ON broker_activity(ticker, date);
@@ -80,21 +82,13 @@ CREATE INDEX IF NOT EXISTS idx_broker_activity_broker ON broker_activity(broker_
 """
 
 
-@contextmanager
-def get_conn() -> Iterator[psycopg2.extensions.connection]:
-    conn = psycopg2.connect(config.DATABASE_URL)
-    try:
-        yield conn
-    finally:
-        conn.close()
-
-
 def init_db() -> None:
     """Create tables and indexes if they don't exist yet."""
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(_SCHEMA)
-        conn.commit()
+    with engine.begin() as conn:
+        for stmt in _SCHEMA.split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                conn.execute(text(stmt))
 
 
 def _clean_numeric_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -107,6 +101,11 @@ def _clean_numeric_df(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _get_raw_conn():
+    """Get a raw psycopg2 connection from the SQLAlchemy pool for bulk upserts."""
+    return engine.raw_connection()
+
+
 def upsert_prices(df: pd.DataFrame) -> int:
     if df.empty:
         return 0
@@ -115,8 +114,9 @@ def upsert_prices(df: pd.DataFrame) -> int:
     cols = ["date", "ticker", "open", "high", "low", "close", "volume"]
     rows = [tuple(row) for row in df[cols].values]
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
+    raw_conn = _get_raw_conn()
+    try:
+        with raw_conn.cursor() as cur:
             execute_values(
                 cur,
                 """
@@ -133,7 +133,9 @@ def upsert_prices(df: pd.DataFrame) -> int:
                 template=None,
                 page_size=1000,
             )
-        conn.commit()
+        raw_conn.commit()
+    finally:
+        raw_conn.close()
     return len(df)
 
 
@@ -153,8 +155,9 @@ def upsert_broker_flow(df: pd.DataFrame) -> int:
             df[c] = None
     rows = [tuple(row) for row in df[cols].values]
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
+    raw_conn = _get_raw_conn()
+    try:
+        with raw_conn.cursor() as cur:
             execute_values(
                 cur,
                 """
@@ -182,7 +185,9 @@ def upsert_broker_flow(df: pd.DataFrame) -> int:
                 rows,
                 page_size=1000,
             )
-        conn.commit()
+        raw_conn.commit()
+    finally:
+        raw_conn.close()
     return len(df)
 
 
@@ -202,8 +207,9 @@ def upsert_broker_activity(df: pd.DataFrame) -> int:
             df[c] = None
     rows = [tuple(row) for row in df[cols].values]
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
+    raw_conn = _get_raw_conn()
+    try:
+        with raw_conn.cursor() as cur:
             execute_values(
                 cur,
                 """
@@ -229,18 +235,27 @@ def upsert_broker_activity(df: pd.DataFrame) -> int:
                 rows,
                 page_size=1000,
             )
-        conn.commit()
+        raw_conn.commit()
+    finally:
+        raw_conn.close()
     return len(df)
 
 
 def log_run(tickers: list[str], n_prices: int, n_broker: int, notes: str = "") -> None:
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO runs (run_at, tickers, n_prices, n_broker, notes) VALUES (%s, %s, %s, %s, %s)",
-                (datetime.now(timezone.utc), ",".join(tickers), n_prices, n_broker, notes),
-            )
-        conn.commit()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO runs (run_at, tickers, n_prices, n_broker, notes) "
+                "VALUES (:run_at, :tickers, :n_prices, :n_broker, :notes)"
+            ),
+            {
+                "run_at": datetime.now(timezone.utc),
+                "tickers": ",".join(tickers),
+                "n_prices": n_prices,
+                "n_broker": n_broker,
+                "notes": notes,
+            },
+        )
 
 
 def read_prices(tickers: list[str] | None = None) -> pd.DataFrame:
@@ -248,10 +263,10 @@ def read_prices(tickers: list[str] | None = None) -> pd.DataFrame:
     q = "SELECT * FROM prices"
     params = None
     if tickers:
-        q += " WHERE ticker = ANY(%s)"
-        params = ([t.upper() for t in tickers],)
-    with get_conn() as conn:
-        df = pd.read_sql(q, conn, params=params, parse_dates=["date"])
+        q += " WHERE ticker = ANY(:tickers)"
+        params = {"tickers": [t.upper() for t in tickers]}
+    with engine.connect() as conn:
+        df = pd.read_sql(text(q), conn, params=params, parse_dates=["date"])
     return df.sort_values(["ticker", "date"]).reset_index(drop=True)
 
 
@@ -260,10 +275,10 @@ def read_broker_flow(tickers: list[str] | None = None) -> pd.DataFrame:
     q = "SELECT * FROM broker_flow"
     params = None
     if tickers:
-        q += " WHERE ticker = ANY(%s)"
-        params = ([t.upper() for t in tickers],)
-    with get_conn() as conn:
-        df = pd.read_sql(q, conn, params=params, parse_dates=["date"])
+        q += " WHERE ticker = ANY(:tickers)"
+        params = {"tickers": [t.upper() for t in tickers]}
+    with engine.connect() as conn:
+        df = pd.read_sql(text(q), conn, params=params, parse_dates=["date"])
     return df.sort_values(["ticker", "date"]).reset_index(drop=True)
 
 
@@ -272,15 +287,19 @@ def read_broker_activity(tickers: list[str] | None = None) -> pd.DataFrame:
     q = "SELECT * FROM broker_activity"
     params = None
     if tickers:
-        q += " WHERE ticker = ANY(%s)"
-        params = ([t.upper() for t in tickers],)
-    with get_conn() as conn:
-        df = pd.read_sql(q, conn, params=params, parse_dates=["date"])
+        q += " WHERE ticker = ANY(:tickers)"
+        params = {"tickers": [t.upper() for t in tickers]}
+    with engine.connect() as conn:
+        df = pd.read_sql(text(q), conn, params=params, parse_dates=["date"])
     return df.sort_values(["ticker", "date", "net_value"], ascending=[True, True, False]).reset_index(drop=True)
 
 
 def read_runs() -> pd.DataFrame:
     init_db()
-    with get_conn() as conn:
-        return pd.read_sql("SELECT * FROM runs ORDER BY run_at DESC", conn, parse_dates=["run_at"])
- 
+    with engine.connect() as conn:
+        return pd.read_sql(
+            text("SELECT * FROM runs ORDER BY run_at DESC"),
+            conn,
+            parse_dates=["run_at"],
+        )
+
