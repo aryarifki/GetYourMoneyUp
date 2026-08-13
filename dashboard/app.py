@@ -16,8 +16,7 @@ import streamlit as st
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
-from idx_bandarmology import analysis, broker_api, pipeline, storage  # noqa: E402
-
+from idx_bandarmology import analysis, broker_api, config, pipeline, storage, universe  # noqa: E402
 
 PROFILE_META = {
     "smart_foreign": ("Foreign Smart Money", "Directional foreign institutions"),
@@ -1169,6 +1168,7 @@ available_tickers = (
 
 with st.sidebar:
     st.header("Controls")
+    st.caption(f"Universe: {config.UNIVERSE_MODE} | Cached: {len(available_tickers)} tickers")
     if not available_tickers:
         st.warning("No ticker has both broker-flow and broker-activity history yet.")
         st.stop()
@@ -1203,7 +1203,7 @@ with st.sidebar:
 
     st.divider()
     if st.button("Run latest pipeline to today"):
-        result = pipeline.run(watchlist)
+        result = pipeline.run(universe_mode=config.UNIVERSE_MODE)
         if result["n_broker"] == 0:
             st.error("No broker-flow rows were stored. Check whether the Stockbit/BROKER_API_TOKEN is still valid or whether the upstream endpoint has data.")
         else:
@@ -1213,7 +1213,7 @@ with st.sidebar:
     if latest_broker_date and latest_broker_date < date.today():
         missing_start = latest_broker_date + timedelta(days=1)
         if st.button(f"Fetch missing broker dates ({missing_start} to {date.today()})"):
-            result = pipeline.backfill_broker_history(watchlist, missing_start, date.today(), refresh_prices=True)
+            result = pipeline.backfill_broker_history(universe_mode=config.UNIVERSE_MODE, start_date=missing_start, end_date=date.today(), refresh_prices=True)
             if result["n_broker"] == 0:
                 st.error("No missing broker rows were stored. The broker API returned no usable rows; refresh the Stockbit token or try again after broker data is published.")
             else:
@@ -1223,7 +1223,7 @@ with st.sidebar:
     backfill_range = st.date_input("Historical backfill range", value=(date.today() - timedelta(days=90), date.today()))
     if st.button("Backfill broker history"):
         if isinstance(backfill_range, tuple) and len(backfill_range) == 2:
-            result = pipeline.backfill_broker_history(watchlist, backfill_range[0], backfill_range[1], refresh_prices=True)
+            result = pipeline.backfill_broker_history(universe_mode=config.UNIVERSE_MODE, start_date=backfill_range[0], end_date=backfill_range[1], refresh_prices=True)
             if result["n_broker"] == 0:
                 st.error("No broker rows were stored for that range. The broker API returned no usable rows; refresh the Stockbit token or check the selected dates.")
             else:
