@@ -1656,3 +1656,5 @@ try:
 except Exception:
     _db_info = "PostgreSQL"
 st.caption(f"Database: {_db_info}")
+st.caption("Created by : Cugarete")
+             
