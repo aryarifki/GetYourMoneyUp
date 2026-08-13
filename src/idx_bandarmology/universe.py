@@ -3,20 +3,22 @@
 Supports multiple universe modes:
   * "watchlist"   -> config.WATCHLIST (legacy 10 tickers)
   * "idx30"       -> IDX30 constituents
-  * "lq45"        -> LQ45 constituents  
+  * "lq45"        -> LQ45 constituents
   * "idx80"       -> IDX80 constituents
   * "liquid"      -> Top liquid stocks by daily value
-  * "all"         -> All listed companies (~900 tickers)
+  * "all"         -> All listed companies (~900 tickers) from CSV or BEI
   * "custom"      -> User-defined comma-separated list
 
 The master ticker list is fetched once from BEI and cached in PostgreSQL.
+If BEI is blocked (403), falls back to a local CSV file or hard-coded lists.
 """
 
 from __future__ import annotations
 
-import json
+import csv
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -24,9 +26,12 @@ import requests
 
 from . import config, storage
 
-# BEI endpoints for constituents and stock summaries
+# BEI endpoints
 _BEI_STOCK_SUMMARY = "https://www.idx.co.id/umbraco/Surface/TradingSummary/GetStockSummary"
 _BEI_CONSTITUENT = "https://www.idx.co.id/umbraco/Surface/StockData/GetConstituent"
+
+# Local CSV fallback path
+_LOCAL_TICKERS_CSV = config.DATA_DIR / "idx_all_tickers.csv"
 
 # Hard-coded index constituents (updated Aug 2026) as fallback
 _IDX30 = [
@@ -59,51 +64,205 @@ _IDX80 = [
     "SSIA", "TAPG", "TLKM", "TOWR", "TPIA", "UNTR", "UNVR", "WIFI",
 ]
 
+# Extended liquid fallback (~200 tickers) when BEI is down and no CSV
+_EXTENDED_LIQUID = sorted(set(_IDX80 + _LQ45 + _IDX30 + config.WATCHLIST + [
+    "AALI", "ABBA", "ABDA", "ABMM", "ACES", "ACST", "ADES", "ADHI",
+    "ADMF", "ADMG", "AGII", "AGRO", "AISA", "AKRA", "ALDO", "ALKA",
+    "AMAG", "AMFG", "AMIN", "ANJT", "APEX", "APII", "APLI", "APLN",
+    "ARCI", "ARNA", "ARTA", "ARTI", "ASBI", "ASDM", "ASGR", "ASJT",
+    "ASMI", "ASRI", "ASSA", "ATIC", "AUTO", "AYLS", "BALI", "BAPA",
+    "BATA", "BAYU", "BBHI", "BBKP", "BBLD", "BBMD", "BBYB", "BCAP",
+    "BCIC", "BCIP", "BDKR", "BDMN", "BEKS", "BEST", "BGTG", "BHIT",
+    "BIKA", "BIMA", "BIMP", "BIPP", "BIRD", "BISI", "BJBR", "BJTM",
+    "BLTA", "BLTZ", "BMAS", "BMSR", "BMTR", "BNBA", "BNGA", "BNII",
+    "BNLI", "BOGA", "BOLT", "BORN", "BOSS", "BPFI", "BPII", "BRAM",
+    "BRNA", "BSIM", "BSSR", "BTEK", "BTON", "BTPN", "BUDI", "BUVA",
+    "BVIC", "BWPT", "BYAN", "CANI", "CARE", "CARS", "CASS", "CEKA",
+    "CENT", "CFIN", "CINT", "CITA", "CITY", "CLAY", "CLEO", "CLPI",
+    "CMNP", "CMNT", "CMPP", "CNMA", "CNTX", "COWL", "CPRI", "CSAP",
+    "CSIS", "CSMI", "CTBN", "CTTH", "DART", "DAYA", "DEAL", "DEWI",
+    "DGIK", "DGNS", "DIGI", "DILD", "DKFT", "DLTA", "DMAS", "DNET",
+    "DOID", "DPNS", "DRMA", "DSFI", "DSSA", "DUTI", "DVLA", "DYAN",
+    "ECII", "EDGE", "EFIS", "EIWA", "ELTY", "EMDE", "ENVY", "EPMT",
+    "ERTX", "ESTI", "FAPA", "FASW", "FILM", "FIMP", "FIRE", "FISH",
+    "FMII", "FORU", "FPNI", "FREN", "GAMA", "GDST", "GDYR", "GEMA",
+    "GEMS", "GJTL", "GLVA", "GMTD", "GOLD", "GOLL", "GPRA", "GSMF",
+    "GTBO", "GTSI", "GULA", "GWNG", "HADE", "HDFA", "HDTX", "HELI",
+    "HERO", "HEXA", "HITS", "HKMU", "HMSP", "HOKI", "HOME", "HOMI",
+    "HOPE", "IATA", "IBFN", "IBST", "ICON", "IDEA", "IDPR", "IFII",
+    "IFSH", "IGAR", "IIKP", "IKAI", "IKBI", "IMAS", "IMJS", "IMPC",
+    "INAF", "INAI", "INCF", "INCI", "INDO", "INDR", "INDS", "INDX",
+    "INPC", "INPP", "INTA", "INTD", "IPCC", "IPCM", "IPOL", "ISSP",
+    "ITMA", "JAST", "JAWA", "JAYA", "JECC", "JGLE", "JIHD", "JKON",
+    "JMAS", "JRPT", "JSKY", "JTPE", "KAEF", "KARW", "KAYU", "KBAG",
+    "KBLI", "KDSI", "KEEN", "KELY", "KGJI", "KING", "KINO", "KIOS",
+    "KJEN", "KKGI", "KOBX", "KOIN", "KONI", "KOPI", "KRAH", "KRAS",
+    "KREN", "LAND", "LAPD", "LCGP", "LEAD", "LINK", "LION", "LMAS",
+    "LMPI", "LMSH", "LPCK", "LPGI", "LPIN", "LPKR", "LPLI", "LPPF",
+    "LSIP", "LTLS", "MABA", "MAGP", "MAIN", "MAMI", "MARI", "MARK",
+    "MASA", "MAYA", "MBAP", "MBSS", "MBTO", "MCAS", "MCOL", "MDIA",
+    "MDLN", "MDRN", "MEGA", "MERK", "META", "MFIN", "MGNA", "MICE",
+    "MINA", "MIRA", "MITI", "MKPI", "MLBI", "MLIA", "MLPL", "MMLP",
+    "MNCN", "MPMX", "MPPA", "MRAT", "MSKY", "MTDL", "MTFN", "MTLA",
+    "MTSM", "MYOH", "MYRX", "MYTX", "NASA", "NATO", "NELY", "NFCX",
+    "NICK", "NIKL", "NIPS", "NOBU", "NPGF", "NRCA", "NTBK", "NUSA",
+    "OBMD", "OBLI", "OCAP", "OILS", "OMRE", "OPMS", "PADI", "PALM",
+    "PAMG", "PANR", "PANS", "PBID", "PBRX", "PBSA", "PDES", "PEHA",
+    "PGLI", "PGUN", "PICO", "PJAA", "PKPK", "PLAS", "PLIN", "PMJS",
+    "PNBN", "PNBS", "PNIN", "PNLF", "PNSE", "POLA", "POLI", "POLL",
+    "POLU", "PORT", "POSA", "POWR", "PPRO", "PRAS", "PRDA", "PSAB",
+    "PSGO", "PSKT", "PSSI", "PTIS", "PTPP", "PTSN", "PUDP", "PURA",
+    "PYFA", "RALS", "RANC", "RBMS", "RDTX", "REAL", "RELI", "RICY",
+    "RIGS", "RIMO", "RISE", "RODA", "ROTI", "RUIS", "SAFE", "SAME",
+    "SAMS", "SAPX", "SATU", "SBAT", "SCCO", "SCNP", "SDMU", "SDPC",
+    "SDRA", "SEMA", "SGER", "SGRO", "SHID", "SHIP", "SIDO", "SILO",
+    "SIMA", "SIMP", "SINI", "SKBM", "SKLT", "SKRN", "SLIS", "SMAR",
+    "SMBR", "SMCB", "SMMA", "SMMT", "SMRA", "SMSM", "SOCI", "SOHO",
+    "SONA", "SPMA", "SPTO", "SQMI", "SRAJ", "SRIL", "SSMS", "SSTM",
+    "STAR", "STTP", "SUGI", "SULI", "SUPR", "SURE", "SWAT", "TAMU",
+    "TARA", "TAXI", "TBIG", "TBLA", "TCID", "TEBE", "TECH", "TELE",
+    "TFCO", "TGKA", "TGRA", "TIFA", "TINS", "TIRA", "TIRT", "TKIM",
+    "TMAS", "TMPO", "TOBA", "TOPS", "TOTL", "TOTO", "TOYS", "TPIA",
+    "TPMA", "TRAM", "TRIL", "TRIN", "TRIO", "TRIS", "TRJA", "TRST",
+    "TRUE", "TUGU", "TURI", "UCID", "UFOE", "ULTJ", "UNIC", "UNIQ",
+    "UNSP", "URBN", "VICI", "VICO", "VIVA", "VOKS", "VRNA", "WAPO",
+    "WEGE", "WICO", "WIIM", "WIKA", "WINS", "WOMF", "WOOD", "WOWS",
+    "WSBP", "WTON", "YELO", "YPAS", "YULE", "ZBRA", "ZINC", "ZONE",
+]))
 
-def _fetch_bei_stock_summary(limit: int = 1000) -> list[dict[str, Any]]:
+
+def _fetch_bei_stock_summary(limit: int = 1200, retries: int = 3) -> list[dict[str, Any]]:
     """Fetch complete stock list from BEI TradingSummary endpoint."""
-    try:
-        resp = requests.get(
-            _BEI_STOCK_SUMMARY,
-            params={"start": 0, "length": limit},
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        rows = data.get("data", []) or data.get("Data", []) or []
-        out = []
-        for row in rows:
-            code = row.get("StockCode") or row.get("code") or row.get("KodeEmiten")
-            name = row.get("StockName") or row.get("name") or row.get("NamaEmiten")
-            if code:
-                out.append({
-                    "ticker": code.upper().strip(),
-                    "name": (name or "").strip(),
-                    "board": (row.get("ListingBoard") or row.get("board") or "").strip(),
-                    "sector": (row.get("Sector") or row.get("sector") or "").strip(),
-                })
-        return out
-    except Exception as exc:
-        print(f"[universe] BEI fetch failed: {exc}")
-        return []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": "https://www.idx.co.id/id/data-pasar/data-saham/daftar-saham",
+        "Connection": "keep-alive",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    }
+    for attempt in range(retries):
+        try:
+            resp = requests.get(
+                _BEI_STOCK_SUMMARY,
+                params={"start": 0, "length": limit},
+                headers=headers,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            rows = data.get("data", []) or data.get("Data", []) or []
+            out = []
+            for row in rows:
+                code = row.get("StockCode") or row.get("code") or row.get("KodeEmiten")
+                name = row.get("StockName") or row.get("name") or row.get("NamaEmiten")
+                if code:
+                    out.append({
+                        "ticker": code.upper().strip(),
+                        "name": (name or "").strip(),
+                        "board": (row.get("ListingBoard") or row.get("board") or "").strip(),
+                        "sector": (row.get("Sector") or row.get("sector") or "").strip(),
+                    })
+            if out:
+                return out
+        except Exception as exc:
+            print(f"[universe] BEI fetch attempt {attempt + 1}/{retries} failed: {exc}")
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+    return []
 
 
-def _fetch_bei_constituent(index_code: str = "IHSG") -> list[str]:
+def _fetch_bei_constituent(index_code: str = "IHSG", retries: int = 3) -> list[str]:
     """Fetch index constituents from BEI."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Referer": "https://www.idx.co.id/id/data-pasar/indeks-saham/",
+    }
+    for attempt in range(retries):
+        try:
+            resp = requests.get(
+                _BEI_CONSTITUENT,
+                params={"index": index_code},
+                headers=headers,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            items = data.get("Items", []) or data.get("items", []) or data.get("data", []) or []
+            return [str(i.get("code") or i.get("StockCode") or i.get("ticker", "")).upper().strip() for i in items if i.get("code") or i.get("StockCode") or i.get("ticker")]
+        except Exception as exc:
+            print(f"[universe] BEI constituent fetch attempt {attempt + 1}/{retries} failed for {index_code}: {exc}")
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+    return []
+
+
+def _load_tickers_from_csv(path: Path | str | None = None) -> list[dict[str, Any]]:
+    """Load ticker list from a local CSV file.
+
+    Supports BEI download format:
+        No,Kode,Nama Perusahaan,Tanggal Pencatatan,Saham,Papan Pencatatan
+    Or simple format:
+        ticker,name,board,sector
+    """
+    path = Path(path or _LOCAL_TICKERS_CSV)
+    if not path.exists():
+        return []
+    rows = []
     try:
-        resp = requests.get(
-            _BEI_CONSTITUENT,
-            params={"index": index_code},
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        items = data.get("Items", []) or data.get("items", []) or data.get("data", []) or []
-        return [str(i.get("code") or i.get("StockCode") or i.get("ticker", "")).upper().strip() for i in items if i.get("code") or i.get("StockCode") or i.get("ticker")]
+        with open(path, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if not header:
+                return []
+
+            # Detect column indices
+            def find_col(names: tuple[str, ...]) -> int | None:
+                for i, h in enumerate(header):
+                    h_lower = str(h).lower().strip()
+                    for name in names:
+                        if name in h_lower:
+                            return i
+                return None
+
+            ticker_idx = find_col(("kode", "ticker", "code", "symbol", "simbol"))
+            name_idx = find_col(("nama", "name", "perusahaan", "company"))
+            board_idx = find_col(("papan", "board", "listing"))
+            sector_idx = find_col(("sektor", "sector", "industri", "industry"))
+
+            if ticker_idx is None:
+                # No header found, assume first column is ticker
+                ticker_idx = 0
+                # First row might be data, not header
+                rows.append({
+                    "ticker": str(header[0]).upper().strip(),
+                    "name": str(header[1]).strip() if len(header) > 1 and name_idx is not None else "",
+                    "board": str(header[2]).strip() if len(header) > 2 and board_idx is not None else "",
+                    "sector": str(header[3]).strip() if len(header) > 3 and sector_idx is not None else "",
+                })
+
+            for row in reader:
+                if not row or not row[ticker_idx].strip():
+                    continue
+                # Skip header-like rows or empty
+                val = row[ticker_idx].strip()
+                if val.lower() in ("kode", "ticker", "code", "symbol"):
+                    continue
+                rows.append({
+                    "ticker": val.upper(),
+                    "name": row[name_idx].strip() if name_idx is not None and len(row) > name_idx else "",
+                    "board": row[board_idx].strip() if board_idx is not None and len(row) > board_idx else "",
+                    "sector": row[sector_idx].strip() if sector_idx is not None and len(row) > sector_idx else "",
+                })
+        print(f"[universe] Loaded {len(rows)} tickers from {path}")
+        return rows
     except Exception as exc:
-        print(f"[universe] BEI constituent fetch failed for {index_code}: {exc}")
+        print(f"[universe] CSV load failed: {exc}")
         return []
 
 
@@ -136,7 +295,6 @@ def refresh_master_tickers(force: bool = False) -> int:
     """
     _ensure_tickers_table()
 
-    # Check if we already have recent data
     if not force:
         from sqlalchemy import text
         with storage.engine.connect() as conn:
@@ -146,14 +304,19 @@ def refresh_master_tickers(force: bool = False) -> int:
                 print(f"[universe] Using cached master tickers ({count} active). Use force=True to refresh.")
                 return int(count)
 
+    # Try BEI first
     rows = _fetch_bei_stock_summary(limit=1200)
+
+    # Fallback to CSV if BEI fails
     if not rows:
-        print("[universe] Warning: BEI fetch returned empty. Keeping existing tickers if any.")
+        rows = _load_tickers_from_csv()
+
+    if not rows:
+        print("[universe] Warning: BEI and CSV both empty. Keeping existing tickers if any.")
         return 0
 
     from sqlalchemy import text
     with storage.engine.begin() as conn:
-        # Mark all inactive first, then re-activate those we see
         conn.execute(text("UPDATE tickers SET is_active = FALSE"))
         for row in rows:
             conn.execute(
@@ -175,7 +338,7 @@ def refresh_master_tickers(force: bool = False) -> int:
                     "updated_at": datetime.now(timezone.utc),
                 },
             )
-    print(f"[universe] Refreshed {len(rows)} master tickers from BEI.")
+    print(f"[universe] Refreshed {len(rows)} master tickers.")
     return len(rows)
 
 
@@ -227,25 +390,22 @@ def get_universe(mode: str = "watchlist", custom_list: list[str] | None = None) 
         return sorted({t.upper() for t in custom_list if t.strip()})
 
     if mode == "all":
+        # Priority: PostgreSQL cache > CSV file > Extended liquid fallback
         tickers = get_master_tickers(active_only=True)
-        if not tickers:
-            print("[universe] Master tickers empty. Refreshing from BEI...")
-            refresh_master_tickers()
-            tickers = get_master_tickers(active_only=True)
-        if not tickers:
-            print("[universe] Warning: Falling back to IDX80 because BEI fetch failed.")
-            tickers = _IDX80
-        return tickers
+        if tickers:
+            return tickers
+        csv_rows = _load_tickers_from_csv()
+        if csv_rows:
+            return sorted({r["ticker"].upper() for r in csv_rows})
+        print("[universe] Warning: No cached tickers or CSV found. Using extended liquid fallback (~200 tickers).")
+        return sorted({t.upper() for t in _EXTENDED_LIQUID})
 
     if mode == "liquid":
-        # Liquid = intersection of IDX80 + those with recent broker data
         tickers = get_master_tickers(active_only=True)
-        if not tickers:
-            tickers = _IDX80
-        # Try to further filter to those with actual trading volume
-        # For now, use IDX80 as liquid proxy + any watchlist items
-        liquid = set(_IDX80) | set(config.WATCHLIST)
-        return sorted({t.upper() for t in liquid})
+        if tickers:
+            liquid = set(_IDX80) | set(config.WATCHLIST)
+            return sorted({t.upper() for t in liquid if t.upper() in tickers})
+        return sorted({t.upper() for t in set(_IDX80) | set(config.WATCHLIST)})
 
     raise ValueError(f"Unknown universe mode: {mode}. Choose from: watchlist, idx30, lq45, idx80, all, liquid, custom")
 
@@ -253,16 +413,25 @@ def get_universe(mode: str = "watchlist", custom_list: list[str] | None = None) 
 def get_universe_info() -> dict[str, Any]:
     """Return metadata about available universes."""
     master_count = len(get_master_tickers(active_only=True))
+    csv_rows = _load_tickers_from_csv()
     return {
         "watchlist": len(config.WATCHLIST),
         "idx30": len(_IDX30),
         "lq45": len(_LQ45),
         "idx80": len(_IDX80),
         "all_cached": master_count,
-        "all_estimated": 900,  # rough IDX total
+        "all_csv": len(csv_rows),
+        "all_extended_fallback": len(_EXTENDED_LIQUID),
     }
 
 
-import pandas as pd
-
-
+def save_universe_to_csv(tickers: list[str], path: Path | str | None = None) -> None:
+    """Save a ticker list to CSV for manual editing or backup."""
+    path = Path(path or _LOCAL_TICKERS_CSV)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["ticker", "name", "board", "sector"])
+        for t in sorted(set(tickers)):
+            writer.writerow([t.upper(), "", "", ""])
+    print(f"[universe] Saved {len(tickers)} tickers to {path}")
