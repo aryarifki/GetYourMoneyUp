@@ -7,6 +7,7 @@ This module exposes:
   * Bandar detector accumulation/distribution states.
   * Foreign-vs-domestic transaction flow.
   * Multi-timeframe price performance used as a cross-check.
+  * Rate-limited fetching for large universes (~900 tickers).
 
 Every numeric field is normalized to a float or ``None`` — nothing is
 fabricated when a field is missing. Each section also carries a short
@@ -15,10 +16,12 @@ English summary string for quick display in the dashboard.
 
 from __future__ import annotations
 
+import threading
 import time
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Optional
 
+import pandas as pd
 import requests
 
 from . import config
@@ -27,6 +30,46 @@ _BASE = "https://exodus.stockbit.com"
 _TIMEOUT = 15.0
 _CACHE_TTL = 300.0  # 5 minutes — upstream data is end-of-day and refreshes slowly.
 _cache: dict[str, tuple[float, Any]] = {}
+
+# ── rate limiter (token bucket) ────────────────────────────────────────────
+# Stockbit appears to allow ~40 requests per 5 minutes (~1 req / 7.5 s).
+# We default to conservative 1 req / 8 s for safety.
+_RL_LOCK = threading.Lock()
+_RL_TOKENS: float = 1.0
+_RL_LAST = time.monotonic()
+_RL_RATE: float = 1.0 / 8.0   # tokens per second (1 request per 8 s)
+_RL_BURST: float = 1.0        # max tokens
+
+
+def set_rate_limit(req_per_minute: float = 8.0) -> None:
+    """Adjust the rate limit dynamically.
+
+    Default 8 req/min = 1 req every 7.5 s.
+    If you discover the real limit is higher, call this before fetching.
+    """
+    global _RL_RATE
+    _RL_RATE = req_per_minute / 60.0
+    print(f"[broker_api] Rate limit set to {req_per_minute:.1f} req/min ({1/_RL_RATE:.1f}s interval)")
+
+
+def _acquire_token() -> None:
+    """Block until a token is available (token-bucket style)."""
+    global _RL_TOKENS, _RL_LAST
+    with _RL_LOCK:
+        now = time.monotonic()
+        elapsed = now - _RL_LAST
+        _RL_TOKENS = min(_RL_BURST, _RL_TOKENS + elapsed * _RL_RATE)
+        _RL_LAST = now
+        if _RL_TOKENS < 1.0:
+            need = 1.0 - _RL_TOKENS
+            sleep = need / _RL_RATE
+            _RL_LAST = now + sleep
+            _RL_TOKENS = 0.0
+        else:
+            sleep = 0.0
+            _RL_TOKENS -= 1.0
+    if sleep > 0:
+        time.sleep(sleep)
 
 
 # ── transport ────────────────────────────────────────────────────────────────
@@ -43,6 +86,7 @@ def _get(path: str) -> Any:
             "BROKER_API_TOKEN not configured — add it to your .env "
             "(see .env.example)"
         )
+    _acquire_token()  # <-- rate limit applied here
     resp = requests.get(
         _BASE + path,
         headers={
@@ -105,6 +149,15 @@ def _rp(v: Optional[float]) -> str:
 
 def _sym(ticker: str) -> str:
     return ticker.upper().replace(".JK", "").strip()
+
+
+def _parse_date(value: str | date | datetime) -> date:
+    """Parse various date inputs into a date object."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return datetime.strptime(str(value), "%Y-%m-%d").date()
 
 
 # accdist label -> (signal code, score, readable English)
@@ -414,28 +467,14 @@ def _foreign_domestic_section(sym: str) -> dict[str, Any]:
     return out
 
 
-def _parse_date(value: str | date | datetime) -> date:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    return datetime.strptime(str(value), "%Y-%m-%d").date()
-
+# ── historical fetchers ──────────────────────────────────────────────────────
 
 def fetch_historical_broker_flow(
     tickers: list[str],
     start_date: str | date | datetime,
     end_date: str | date | datetime,
 ) -> pd.DataFrame:
-    """Backfill daily broker/bandar snapshots from Stockbit marketdetectors.
-
-    The live pipeline stores one latest snapshot per run. This function fills
-    older signal dates by querying ``/marketdetectors/{ticker}?from=d&to=d``
-    for each weekday in the requested range, then flattening the result to the
-    same columns used by the ``broker_flow`` table.
-    """
-    import pandas as pd
-
+    """Backfill daily broker/bandar snapshots from Stockbit marketdetectors."""
     start = _parse_date(start_date)
     end = _parse_date(end_date)
     if start > end:
@@ -462,7 +501,8 @@ def fetch_historical_broker_flow(
     from concurrent.futures import ThreadPoolExecutor
 
     tasks = [(sym, iso) for iso in dates for sym in syms]
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(tasks)))) as pool:
+    max_workers = 1 if len(syms) > 20 else min(8, max(1, len(tasks)))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
         rows = [row for row in pool.map(fetch_one, tasks) if row is not None]
 
     cols = [
@@ -479,8 +519,10 @@ def fetch_historical_broker_data(
     start_date: str | date | datetime,
     end_date: str | date | datetime,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Backfill daily flow rows and per-broker distribution rows."""
-    import pandas as pd
+    """Backfill daily flow rows and per-broker distribution rows.
+
+    Rate-limited: safe for large universes (hundreds of tickers).
+    """
     from concurrent.futures import ThreadPoolExecutor
 
     start = _parse_date(start_date)
@@ -498,8 +540,12 @@ def fetch_historical_broker_data(
         current += timedelta(days=1)
 
     errors: list[str] = []
+    total_tasks = len(dates) * len(syms)
+    completed = 0
+    last_log = time.time()
 
     def fetch_one(task: tuple[str, str]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        nonlocal completed, last_log
         sym, iso = task
         try:
             md = _md_range(sym, iso, iso)
@@ -509,10 +555,18 @@ def fetch_historical_broker_data(
             return None, []
         flow = _flow_row(sym, md, iso, fetched_at)
         activity = _broker_activity_rows(sym, md, fetched_at) if flow else []
+        completed += 1
+        if time.time() - last_log >= 30:
+            pct = completed / total_tasks * 100 if total_tasks else 0
+            print(f"[broker_api] Progress {completed}/{total_tasks} ({pct:.1f}%)")
+            last_log = time.time()
         return flow, activity
 
     tasks = [(sym, iso) for iso in dates for sym in syms]
-    with ThreadPoolExecutor(max_workers=min(8, max(1, len(tasks)))) as pool:
+    max_workers = 1 if len(syms) > 20 else min(4, max(1, len(tasks)))
+    print(f"[broker_api] Fetching {len(syms)} tickers x {len(dates)} dates = {total_tasks} tasks (workers={max_workers})")
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
         results = list(pool.map(fetch_one, tasks))
 
     flow_rows = [flow for flow, _activity in results if flow is not None]
@@ -630,12 +684,18 @@ def _overall_summary(sym: str, r: dict[str, Any]) -> str:
     return f"{sym}: " + "; ".join(bits) + "."
 
 
-def fetch_watchlist(symbols: list[str]) -> dict[str, dict[str, Any]]:
-    """Run fetch_analysis for each symbol in the watchlist. Never raises."""
+def fetch_watchlist(symbols: list[str], progress_every: int = 10) -> dict[str, dict[str, Any]]:
+    """Run fetch_analysis for each symbol. Never raises.
+
+    For large universes this is intentionally sequential (respects rate limit).
+    """
     out: dict[str, dict[str, Any]] = {}
-    for s in symbols:
+    total = len(symbols)
+    for i, s in enumerate(symbols, 1):
         try:
             out[_sym(s)] = fetch_analysis(s)
         except Exception as exc:  # noqa: BLE001
             out[_sym(s)] = {"ticker": _sym(s), "available": False, "reason": str(exc)[:160]}
+        if i % progress_every == 0 or i == total:
+            print(f"[broker_api] watchlist progress {i}/{total} ({i/total*100:.1f}%)")
     return out

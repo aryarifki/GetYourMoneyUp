@@ -75,10 +75,21 @@ CREATE TABLE IF NOT EXISTS runs (
     notes    TEXT
 );
 
+CREATE TABLE IF NOT EXISTS tickers (
+    ticker      VARCHAR(20) PRIMARY KEY,
+    name        VARCHAR(200),
+    board       VARCHAR(50),
+    sector      VARCHAR(100),
+    is_active   BOOLEAN DEFAULT TRUE,
+    updated_at  TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_prices_ticker_date ON prices(ticker, date);
 CREATE INDEX IF NOT EXISTS idx_broker_flow_ticker_date ON broker_flow(ticker, date);
 CREATE INDEX IF NOT EXISTS idx_broker_activity_ticker_date ON broker_activity(ticker, date);
 CREATE INDEX IF NOT EXISTS idx_broker_activity_broker ON broker_activity(broker_code);
+CREATE INDEX IF NOT EXISTS idx_tickers_sector ON tickers(sector);
+CREATE INDEX IF NOT EXISTS idx_tickers_board ON tickers(board);
 """
 
 
@@ -302,4 +313,3 @@ def read_runs() -> pd.DataFrame:
             conn,
             parse_dates=["run_at"],
         )
-

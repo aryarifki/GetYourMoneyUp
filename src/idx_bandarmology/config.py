@@ -56,7 +56,7 @@ def get_broker_api_token() -> str | None:
 
 BROKER_API_TOKEN = get_broker_api_token()
 
-# ── watchlist ─────────────────────────────────────────────────────────────
+# ── watchlist (legacy 10-ticker default) ──────────────────────────────────
 _DEFAULT_WATCHLIST = [
     "BBCA", "BBRI", "BMRI", "BBNI",
     "TLKM", "ASII", "UNVR",
@@ -73,3 +73,25 @@ def get_watchlist() -> list[str]:
 
 
 WATCHLIST = get_watchlist()
+
+# ── universe mode ─────────────────────────────────────────────────────────
+def get_universe_mode() -> str:
+    """Default universe mode from env (UNIVERSE_MODE=idx80, all, lq45, ...).
+
+    Options: watchlist, idx30, lq45, idx80, all, liquid, custom.
+    """
+    return os.environ.get("UNIVERSE_MODE", "watchlist").strip().lower()
+
+
+UNIVERSE_MODE = get_universe_mode()
+
+# ── broker API rate limit ─────────────────────────────────────────────────
+def get_broker_rate_limit() -> float:
+    """Requests per minute for Stockbit. Default 8.0 (conservative)."""
+    try:
+        return float(os.environ.get("BROKER_RATE_LIMIT", "8.0"))
+    except ValueError:
+        return 8.0
+
+
+BROKER_RATE_LIMIT = get_broker_rate_limit()
