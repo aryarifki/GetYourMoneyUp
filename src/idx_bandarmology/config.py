@@ -76,11 +76,10 @@ WATCHLIST = get_watchlist()
 
 # ── universe mode ─────────────────────────────────────────────────────────
 def get_universe_mode() -> str:
-    """Default universe mode from env (UNIVERSE_MODE=idx80, all, lq45, ...).
-
-    Options: watchlist, idx30, lq45, idx80, all, liquid, custom.
-    """
-    return os.environ.get("UNIVERSE_MODE", "watchlist").strip().lower()
+    val = os.environ.get("UNIVERSE_MODE", "watchlist").strip().lower()
+    if val in ("watchlist", "lq45", "kompas100", "all"):
+        return val
+    return "watchlist"
 
 
 UNIVERSE_MODE = get_universe_mode()
