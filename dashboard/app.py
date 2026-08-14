@@ -20,12 +20,20 @@ from streamlit_searchbox import st_searchbox
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
-from idx_bandarmology import analysis, broker_api, config, pipeline, storage  # noqa: E402
-from idx_bandarmology.universe import get_universe, get_master_tickers
+from idx_bandarmology import analysis, broker_api, pipeline, storage  # noqa: E402
+from idx_bandarmology.universe import get_universe
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_cached_universe(mode: str) -> list[str]:
     return get_universe(mode=mode)
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _load_ticker_data(ticker: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    return (
+        storage.read_prices([ticker]).copy(),
+        storage.read_broker_flow([ticker]).copy(),
+        storage.read_broker_activity([ticker]).copy()
+    )
 
 PROFILE_META = {
     "smart_foreign": ("Foreign Smart Money", "Directional foreign institutions"),
@@ -190,6 +198,8 @@ def cached_causality(ticker: str) -> dict[str, object] | None:
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def cached_broker_scan(tickers: tuple[str, ...], horizon: int, min_events: int, min_net_value: float) -> pd.DataFrame:
+    if len(tickers) > 100:
+        tickers = tickers[:100]
     return analysis.broker_alpha_scan(
         list(tickers),
         horizon=horizon,
@@ -1159,21 +1169,26 @@ st.markdown(
 )
 
 
-try:
-    available_tickers = get_master_tickers(active_only=True)
-except Exception:
-    available_tickers = []
-
 with st.sidebar:
     st.header("Controls")
+
+    universe_mode = st.selectbox("Universe", ["watchlist", "idx30", "lq45", "idx80", "all"], index=0)
+    if st.session_state.get("last_universe") != universe_mode:
+        st.session_state["last_universe"] = universe_mode
+        st.cache_data.clear()
+        st.rerun()
+
+    with st.spinner("Resolving universe..."):
+        watchlist = get_cached_universe(universe_mode)
+        try:
+            available_tickers = storage.read_broker_flow(watchlist)["ticker"].unique().tolist()
+        except Exception:
+            available_tickers = []
+        watchlist = [t for t in watchlist if t in available_tickers] if available_tickers else watchlist
+
     if not available_tickers:
         st.warning("No ticker has both broker-flow and broker-activity history yet.")
         st.stop()
-
-    universe_mode = st.selectbox("Universe", ["watchlist", "idx30", "lq45", "idx80", "all"], index=0)
-    with st.spinner("Resolving universe..."):
-        watchlist = get_cached_universe(universe_mode)
-        watchlist = [t for t in watchlist if t in available_tickers] if available_tickers else watchlist
 
     if not watchlist:
         st.warning("The selected universe has no active tickers.")
@@ -1197,9 +1212,7 @@ with st.sidebar:
         selected_ticker = watchlist[0] if watchlist else None
 
     with st.spinner(f"Loading data for {selected_ticker}..."):
-        price_df = storage.read_prices([selected_ticker]).copy()
-        broker_df = storage.read_broker_flow([selected_ticker]).copy()
-        activity_df = storage.read_broker_activity([selected_ticker]).copy()
+        price_df, broker_df, activity_df = _load_ticker_data(selected_ticker)
 
         all_prices = price_df
         all_activity = activity_df
@@ -1284,7 +1297,10 @@ activity_date = latest_activity_date(activity_df, selected_ticker, analysis_ts)
 top_buy, top_sell = analysis.top_net_broker_summary(selected_ticker, trade_date=activity_date, top_n=6)
 daily_smart = smart_daily_from_activity(activity_window)
 profile_df = profile_flow_from_activity(activity_window)
-scan_h = cached_broker_scan(tuple(watchlist), horizon, int(min_events), float(min_net_buy_b) * 1e9)
+if len(watchlist) <= 50:
+    scan_h = cached_broker_scan(tuple(watchlist), horizon, int(min_events), float(min_net_buy_b) * 1e9)
+else:
+    scan_h = pd.DataFrame()
 scan_10d = cached_broker_scan((selected_ticker,), 10, 5, 0.0)
 
 close_value = float(px_row["close"]) if px_row is not None and pd.notna(px_row["close"]) else np.nan
@@ -1572,6 +1588,8 @@ with causality_tab:
 
 with validation_tab:
     st.subheader("Broker-Specific Return Validation")
+    if len(watchlist) > 50:
+        st.info("Broker scan disabled for universes > 50 tickers to preserve memory.")
     if scan_h.empty:
         st.caption("No broker passes the current validation settings.")
     else:
@@ -1643,10 +1661,11 @@ with screener_tab:
     if st.session_state.get("run_screener"):
         with st.spinner("Running screener (this may take a while)..."):
             if "screener_df" not in st.session_state or st.session_state.get("screener_watchlist") != watchlist or st.session_state.get("screener_ts") != analysis_ts:
-                screen_prices = storage.read_prices(watchlist)
-                screen_broker = storage.read_broker_flow(watchlist)
-                screen_activity = storage.read_broker_activity(watchlist)
-                st.session_state["screener_df"] = build_screener(watchlist, analysis_ts, scan_h, screen_prices, screen_broker, screen_activity)
+                screen_tickers = watchlist[:50]
+                screen_prices = storage.read_prices(screen_tickers)
+                screen_broker = storage.read_broker_flow(screen_tickers)
+                screen_activity = storage.read_broker_activity(screen_tickers)
+                st.session_state["screener_df"] = build_screener(screen_tickers, analysis_ts, scan_h, screen_prices, screen_broker, screen_activity)
                 st.session_state["screener_watchlist"] = watchlist
                 st.session_state["screener_ts"] = analysis_ts
 
