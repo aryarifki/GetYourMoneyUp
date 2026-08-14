@@ -66,6 +66,11 @@ def _already_fetched_today(tickers: list[str], table: str = "broker_flow") -> li
     """Return tickers that already have a row for today in the given table."""
     if not tickers:
         return []
+
+    allowed_tables = {"broker_flow", "prices", "broker_activity"}
+    if table not in allowed_tables:
+        raise ValueError(f"Invalid table name: {table}")
+
     today = datetime.now(timezone.utc).date().isoformat()
     from sqlalchemy import text
     q = f"SELECT DISTINCT ticker FROM {table} WHERE date = :today AND ticker = ANY(:tickers)"
