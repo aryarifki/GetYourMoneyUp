@@ -406,15 +406,14 @@ def plot_signal_vs_return(feat: pd.DataFrame, horizon: int = 5,
                           signal_col: str = "bandar_signal_score",
                           direction: str = "back") -> plt.Figure:
     """Scatter + regression line: signal today vs historical or forward return."""
-    prefix = "back" if direction == "back" else "fwd"
-    target_col = f"{prefix}_return_{horizon}d"
+    target_col = f"{'back' if direction == 'back' else 'fwd'}_return_{horizon}d"
     sub = feat[[signal_col, target_col, "ticker"]].dropna()
     fig, ax = plt.subplots(figsize=(7, 5))
     sns.regplot(data=sub, x=signal_col, y=target_col, ax=ax,
                 scatter_kws={"alpha": 0.5, "s": 25}, line_kws={"color": "crimson"})
     ax.set_xlabel("Smart-money signal score (today)")
-    ax.set_ylabel(f"{'Historical' if prefix == 'back' else 'Forward'} return, {horizon}d")
-    ax.set_title(f"Smart money signal vs {horizon}-day {'historical' if prefix == 'back' else 'forward'} return")
+    ax.set_ylabel(f"{'Historical' if direction == 'back' else 'Forward'} return, {horizon}d")
+    ax.set_title(f"Smart money signal vs {horizon}-day {'historical' if direction == 'back' else 'forward'} return")
     ax.axhline(0, color="gray", linewidth=0.8, linestyle="--")
     fig.tight_layout()
     return fig
