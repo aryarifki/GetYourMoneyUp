@@ -228,7 +228,6 @@ def forecast_latest(
     target_col = f"fwd_return_{horizon}d"
     cols = feature_cols or _FEATURE_COLS
     cols = [c for c in cols if c in feat.columns]
-    needed = ["ticker", "date", "close", "bandar_signal"] + cols
     if target_col not in feat.columns or not cols:
         return ForecastResult(target=target_col, n_train=0, predictions=pd.DataFrame(), note="Required columns are missing.")
 
