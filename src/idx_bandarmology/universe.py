@@ -145,34 +145,35 @@ def _fetch_bei_stock_summary(limit: int = 1200, retries: int = 3) -> list[dict[s
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
     }
-    for attempt in range(retries):
-        try:
-            resp = requests.get(
-                _BEI_STOCK_SUMMARY,
-                params={"start": 0, "length": limit},
-                headers=headers,
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            rows = data.get("data", []) or data.get("Data", []) or []
-            out = []
-            for row in rows:
-                code = row.get("StockCode") or row.get("code") or row.get("KodeEmiten")
-                name = row.get("StockName") or row.get("name") or row.get("NamaEmiten")
-                if code:
-                    out.append({
-                        "ticker": code.upper().strip(),
-                        "name": (name or "").strip(),
-                        "board": (row.get("ListingBoard") or row.get("board") or "").strip(),
-                        "sector": (row.get("Sector") or row.get("sector") or "").strip(),
-                    })
-            if out:
-                return out
-        except Exception as exc:
-            print(f"[universe] BEI fetch attempt {attempt + 1}/{retries} failed: {exc}")
-            if attempt < retries - 1:
-                time.sleep(2 ** attempt)
+    with requests.Session() as session:
+        for attempt in range(retries):
+            try:
+                resp = session.get(
+                    _BEI_STOCK_SUMMARY,
+                    params={"start": 0, "length": limit},
+                    headers=headers,
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                rows = data.get("data", []) or data.get("Data", []) or []
+                out = []
+                for row in rows:
+                    code = row.get("StockCode") or row.get("code") or row.get("KodeEmiten")
+                    name = row.get("StockName") or row.get("name") or row.get("NamaEmiten")
+                    if code:
+                        out.append({
+                            "ticker": code.upper().strip(),
+                            "name": (name or "").strip(),
+                            "board": (row.get("ListingBoard") or row.get("board") or "").strip(),
+                            "sector": (row.get("Sector") or row.get("sector") or "").strip(),
+                        })
+                if out:
+                    return out
+            except Exception as exc:
+                print(f"[universe] BEI fetch attempt {attempt + 1}/{retries} failed: {exc}")
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
     return []
 
 
@@ -183,22 +184,23 @@ def _fetch_bei_constituent(index_code: str = "IHSG", retries: int = 3) -> list[s
         "Accept": "application/json",
         "Referer": "https://www.idx.co.id/id/data-pasar/indeks-saham/",
     }
-    for attempt in range(retries):
-        try:
-            resp = requests.get(
-                _BEI_CONSTITUENT,
-                params={"index": index_code},
-                headers=headers,
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            items = data.get("Items", []) or data.get("items", []) or data.get("data", []) or []
-            return [str(i.get("code") or i.get("StockCode") or i.get("ticker", "")).upper().strip() for i in items if i.get("code") or i.get("StockCode") or i.get("ticker")]
-        except Exception as exc:
-            print(f"[universe] BEI constituent fetch attempt {attempt + 1}/{retries} failed for {index_code}: {exc}")
-            if attempt < retries - 1:
-                time.sleep(2 ** attempt)
+    with requests.Session() as session:
+        for attempt in range(retries):
+            try:
+                resp = session.get(
+                    _BEI_CONSTITUENT,
+                    params={"index": index_code},
+                    headers=headers,
+                    timeout=30,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                items = data.get("Items", []) or data.get("items", []) or data.get("data", []) or []
+                return [str(i.get("code") or i.get("StockCode") or i.get("ticker", "")).upper().strip() for i in items if i.get("code") or i.get("StockCode") or i.get("ticker")]
+            except Exception as exc:
+                print(f"[universe] BEI constituent fetch attempt {attempt + 1}/{retries} failed for {index_code}: {exc}")
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
     return []
 
 
