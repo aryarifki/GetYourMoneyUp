@@ -16,6 +16,7 @@ English summary string for quick display in the dashboard.
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 from datetime import date, datetime, timedelta
@@ -148,7 +149,10 @@ def _rp(v: Optional[float]) -> str:
 
 
 def _sym(ticker: str) -> str:
-    return ticker.upper().replace(".JK", "").strip()
+    cleaned = ticker.upper().replace(".JK", "").strip()
+    if not re.match(r"^[A-Z0-9]+$", cleaned):
+        raise ValueError(f"Invalid ticker symbol format: {ticker}")
+    return cleaned
 
 
 def _parse_date(value: str | date | datetime) -> date:
