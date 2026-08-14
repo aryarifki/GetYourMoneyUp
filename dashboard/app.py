@@ -1158,540 +1158,544 @@ st.markdown(
 )
 
 
-try:
-    available_tickers = universe.get_master_tickers(active_only=True)
-except Exception:
-    available_tickers = []
-
-with st.sidebar:
-    st.header("Controls")
-    if not available_tickers:
-        st.warning("No ticker has both broker-flow and broker-activity history yet.")
-        st.stop()
-
-    universe_mode = st.selectbox("Universe", ["watchlist", "idx30", "lq45", "idx80", "all"], index=0)
-    with st.spinner("Resolving universe..."):
-        watchlist = get_cached_universe(universe_mode)
-        watchlist = [t for t in watchlist if t in available_tickers] if available_tickers else watchlist
-
-    if not watchlist:
-        st.warning("The selected universe has no active tickers.")
-        st.stop()
-
+def main():
     try:
-        latest_run = storage.read_runs().iloc[0]["run_at"] if not storage.read_runs().empty else "Unknown"
-    except:
-        latest_run = "Unknown"
-    st.caption(f"Universe: {universe_mode.upper()} | Active Tickers: {len(watchlist)} | Data Freshness: {latest_run}")
+        available_tickers = universe.get_master_tickers(active_only=True)
+    except Exception:
+        available_tickers = []
 
-    def search_tickers(searchterm: str) -> list[str]:
-        searchterm = searchterm.upper() if searchterm else ""
-        return [t for t in watchlist if searchterm in t][:10] if searchterm else watchlist[:10]
+    with st.sidebar:
+        st.header("Controls")
+        if not available_tickers:
+            st.warning("No ticker has both broker-flow and broker-activity history yet.")
+            st.stop()
 
-    selected_ticker = st_searchbox(
-        search_tickers,
-        key="ticker_search"
-    )
-    if not selected_ticker:
-        selected_ticker = watchlist[0] if watchlist else None
+        universe_mode = st.selectbox("Universe", ["watchlist", "idx30", "lq45", "idx80", "all"], index=0)
+        with st.spinner("Resolving universe..."):
+            watchlist = get_cached_universe(universe_mode)
+            watchlist = [t for t in watchlist if t in available_tickers] if available_tickers else watchlist
 
-    with st.spinner(f"Loading data for {selected_ticker}..."):
-        price_df = storage.read_prices([selected_ticker]).copy()
-        broker_df = storage.read_broker_flow([selected_ticker]).copy()
-        activity_df = storage.read_broker_activity([selected_ticker]).copy()
+        if not watchlist:
+            st.warning("The selected universe has no active tickers.")
+            st.stop()
 
-        all_prices = price_df
-        all_activity = activity_df
-        all_broker = broker_df
+        try:
+            latest_run = storage.read_runs().iloc[0]["run_at"] if not storage.read_runs().empty else "Unknown"
+        except:
+            latest_run = "Unknown"
+        st.caption(f"Universe: {universe_mode.upper()} | Active Tickers: {len(watchlist)} | Data Freshness: {latest_run}")
 
-    ticker_dates = sorted(all_activity[all_activity["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
-    latest_broker_date = max(ticker_dates) if ticker_dates else None
-    ticker_price_dates = sorted(all_prices[all_prices["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
-    latest_price_date = max(ticker_price_dates) if ticker_price_dates else None
-    if not ticker_dates:
-        st.warning(f'No data found for {selected_ticker}.')
+        def search_tickers(searchterm: str) -> list[str]:
+            searchterm = searchterm.upper() if searchterm else ""
+            return [t for t in watchlist if searchterm in t][:10] if searchterm else watchlist[:10]
+
+        selected_ticker = st_searchbox(
+            search_tickers,
+            key="ticker_search"
+        )
+        if not selected_ticker:
+            selected_ticker = watchlist[0] if watchlist else None
+
+        with st.spinner(f"Loading data for {selected_ticker}..."):
+            price_df = storage.read_prices([selected_ticker]).copy()
+            broker_df = storage.read_broker_flow([selected_ticker]).copy()
+            activity_df = storage.read_broker_activity([selected_ticker]).copy()
+
+            all_prices = price_df
+            all_activity = activity_df
+            all_broker = broker_df
+
+        ticker_dates = sorted(all_activity[all_activity["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
+        latest_broker_date = max(ticker_dates) if ticker_dates else None
+        ticker_price_dates = sorted(all_prices[all_prices["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
+        latest_price_date = max(ticker_price_dates) if ticker_price_dates else None
+        if not ticker_dates:
+            st.warning(f'No data found for {selected_ticker}.')
+            st.stop()
+
+        if latest_broker_date:
+            st.caption(f"Latest broker data: {latest_broker_date}")
+        if latest_price_date and latest_price_date != latest_broker_date:
+            st.caption(f"Latest price data: {latest_price_date}")
+        if latest_broker_date and latest_broker_date < date.today():
+            st.warning("Today is not available until broker-flow data is fetched and stored.")
+        analysis_date = st.selectbox("Analysis date", ticker_dates, index=len(ticker_dates) - 1)
+        analysis_ts = pd.Timestamp(analysis_date)
+        lookback_label = st.selectbox("Broker window", ["20 calendar days", "30 calendar days", "60 calendar days", "90 calendar days", "180 calendar days"], index=0)
+        lookback_days = int(lookback_label.split()[0])
+        horizon_label = st.selectbox("Validation horizon", ["1 trading day", "3 trading days", "5 trading days", "10 trading days"], index=3)
+        horizon = int(horizon_label.split()[0])
+        min_events = st.number_input("Min broker events", min_value=3, max_value=30, value=5, step=1)
+        min_net_buy_b = st.number_input("Min net buy, Rp B", min_value=0.0, value=0.0, step=0.5)
+
+        st.divider()
+        if st.button("Run latest pipeline to today"):
+            result = pipeline.run(universe_mode=config.UNIVERSE_MODE)
+            if result["n_broker"] == 0:
+                st.error("No broker-flow rows were stored. Check whether the Stockbit/BROKER_API_TOKEN is still valid or whether the upstream endpoint has data.")
+            else:
+                st.success(f"Stored {result['n_broker']} flow rows and {result.get('n_activity', 0)} activity rows.")
+                st.rerun()
+
+        if latest_broker_date and latest_broker_date < date.today():
+            missing_start = latest_broker_date + timedelta(days=1)
+            if st.button(f"Fetch missing broker dates ({missing_start} to {date.today()})"):
+                result = pipeline.backfill_broker_history(universe_mode=config.UNIVERSE_MODE, start_date=missing_start, end_date=date.today(), refresh_prices=True)
+                if result["n_broker"] == 0:
+                    st.error("No missing broker rows were stored. The broker API returned no usable rows; refresh the Stockbit token or try again after broker data is published.")
+                else:
+                    st.success(f"Stored {result['n_broker']} flow rows and {result.get('n_activity', 0)} activity rows.")
+                    st.rerun()
+
+        backfill_range = st.date_input("Historical backfill range", value=(date.today() - timedelta(days=90), date.today()))
+        if st.button("Backfill broker history"):
+            if isinstance(backfill_range, tuple) and len(backfill_range) == 2:
+                result = pipeline.backfill_broker_history(universe_mode=config.UNIVERSE_MODE, start_date=backfill_range[0], end_date=backfill_range[1], refresh_prices=True)
+                if result["n_broker"] == 0:
+                    st.error("No broker rows were stored for that range. The broker API returned no usable rows; refresh the Stockbit token or check the selected dates.")
+                else:
+                    st.success(f"Stored {result['n_broker']} flow rows and {result.get('n_activity', 0)} activity rows.")
+                    st.rerun()
+
+
+
+
+    window_start = analysis_ts - pd.Timedelta(days=lookback_days)
+    price_window = price_df[(price_df["date"] >= window_start) & (price_df["date"] <= analysis_ts)].copy()
+    broker_window = broker_df[(broker_df["date"] >= window_start) & (broker_df["date"] <= analysis_ts)].copy()
+    activity_window = activity_df[(activity_df["date"] >= window_start) & (activity_df["date"] <= analysis_ts)].copy()
+
+    if broker_window.empty or activity_window.empty:
+        st.warning("No broker history exists inside the selected date window.")
         st.stop()
 
-    if latest_broker_date:
-        st.caption(f"Latest broker data: {latest_broker_date}")
-    if latest_price_date and latest_price_date != latest_broker_date:
-        st.caption(f"Latest price data: {latest_price_date}")
-    if latest_broker_date and latest_broker_date < date.today():
-        st.warning("Today is not available until broker-flow data is fetched and stored.")
-    analysis_date = st.selectbox("Analysis date", ticker_dates, index=len(ticker_dates) - 1)
-    analysis_ts = pd.Timestamp(analysis_date)
-    lookback_label = st.selectbox("Broker window", ["20 calendar days", "30 calendar days", "60 calendar days", "90 calendar days", "180 calendar days"], index=0)
-    lookback_days = int(lookback_label.split()[0])
-    horizon_label = st.selectbox("Validation horizon", ["1 trading day", "3 trading days", "5 trading days", "10 trading days"], index=3)
-    horizon = int(horizon_label.split()[0])
-    min_events = st.number_input("Min broker events", min_value=3, max_value=30, value=5, step=1)
-    min_net_buy_b = st.number_input("Min net buy, Rp B", min_value=0.0, value=0.0, step=0.5)
+    px_row = price_at_or_before(price_df, analysis_ts)
+    signal_row = flow_row_at(broker_df, selected_ticker, analysis_ts)
+    activity_date = latest_activity_date(activity_df, selected_ticker, analysis_ts)
+    top_buy, top_sell = analysis.top_net_broker_summary(selected_ticker, trade_date=activity_date, top_n=6)
+    daily_smart = smart_daily_from_activity(activity_window)
+    profile_df = profile_flow_from_activity(activity_window)
+    scan_h = cached_broker_scan(tuple(watchlist), horizon, int(min_events), float(min_net_buy_b) * 1e9)
+    scan_10d = cached_broker_scan((selected_ticker,), 10, 5, 0.0)
 
-    st.divider()
-    if st.button("Run latest pipeline to today"):
-        result = pipeline.run(universe_mode=config.UNIVERSE_MODE)
-        if result["n_broker"] == 0:
-            st.error("No broker-flow rows were stored. Check whether the Stockbit/BROKER_API_TOKEN is still valid or whether the upstream endpoint has data.")
-        else:
-            st.success(f"Stored {result['n_broker']} flow rows and {result.get('n_activity', 0)} activity rows.")
-            st.rerun()
+    close_value = float(px_row["close"]) if px_row is not None and pd.notna(px_row["close"]) else np.nan
+    ret_5d = return_to_date(price_df, analysis_ts, 5)
+    ret_10d = return_to_date(price_df, analysis_ts, 10)
+    foreign_5d = float(broker_window.sort_values("date").tail(5)["foreign_net_broker"].fillna(0).sum())
+    smart_cum = float(daily_smart["cumulative_net"].iloc[-1]) if not daily_smart.empty else np.nan
+    top_buyer = top_buy.iloc[0] if not top_buy.empty else None
+    top_seller = top_sell.iloc[0] if not top_sell.empty else None
+    conviction = conviction_score(signal_row.get("bandar_signal"), foreign_5d, scan_10d, selected_ticker)
+    score_value = float(conviction["score"])
+    score_tone_name, score_color = score_tone(score_value)
+    alerts = contradiction_alerts(signal_row.get("bandar_signal"), ret_5d, ret_10d, foreign_5d, smart_cum)
 
-    if latest_broker_date and latest_broker_date < date.today():
-        missing_start = latest_broker_date + timedelta(days=1)
-        if st.button(f"Fetch missing broker dates ({missing_start} to {date.today()})"):
-            result = pipeline.backfill_broker_history(universe_mode=config.UNIVERSE_MODE, start_date=missing_start, end_date=date.today(), refresh_prices=True)
-            if result["n_broker"] == 0:
-                st.error("No missing broker rows were stored. The broker API returned no usable rows; refresh the Stockbit token or try again after broker data is published.")
-            else:
-                st.success(f"Stored {result['n_broker']} flow rows and {result.get('n_activity', 0)} activity rows.")
-                st.rerun()
-
-    backfill_range = st.date_input("Historical backfill range", value=(date.today() - timedelta(days=90), date.today()))
-    if st.button("Backfill broker history"):
-        if isinstance(backfill_range, tuple) and len(backfill_range) == 2:
-            result = pipeline.backfill_broker_history(universe_mode=config.UNIVERSE_MODE, start_date=backfill_range[0], end_date=backfill_range[1], refresh_prices=True)
-            if result["n_broker"] == 0:
-                st.error("No broker rows were stored for that range. The broker API returned no usable rows; refresh the Stockbit token or check the selected dates.")
-            else:
-                st.success(f"Stored {result['n_broker']} flow rows and {result.get('n_activity', 0)} activity rows.")
-                st.rerun()
-
-
-
-
-window_start = analysis_ts - pd.Timedelta(days=lookback_days)
-price_window = price_df[(price_df["date"] >= window_start) & (price_df["date"] <= analysis_ts)].copy()
-broker_window = broker_df[(broker_df["date"] >= window_start) & (broker_df["date"] <= analysis_ts)].copy()
-activity_window = activity_df[(activity_df["date"] >= window_start) & (activity_df["date"] <= analysis_ts)].copy()
-
-if broker_window.empty or activity_window.empty:
-    st.warning("No broker history exists inside the selected date window.")
-    st.stop()
-
-px_row = price_at_or_before(price_df, analysis_ts)
-signal_row = flow_row_at(broker_df, selected_ticker, analysis_ts)
-activity_date = latest_activity_date(activity_df, selected_ticker, analysis_ts)
-top_buy, top_sell = analysis.top_net_broker_summary(selected_ticker, trade_date=activity_date, top_n=6)
-daily_smart = smart_daily_from_activity(activity_window)
-profile_df = profile_flow_from_activity(activity_window)
-scan_h = cached_broker_scan(tuple(watchlist), horizon, int(min_events), float(min_net_buy_b) * 1e9)
-scan_10d = cached_broker_scan((selected_ticker,), 10, 5, 0.0)
-
-close_value = float(px_row["close"]) if px_row is not None and pd.notna(px_row["close"]) else np.nan
-ret_5d = return_to_date(price_df, analysis_ts, 5)
-ret_10d = return_to_date(price_df, analysis_ts, 10)
-foreign_5d = float(broker_window.sort_values("date").tail(5)["foreign_net_broker"].fillna(0).sum())
-smart_cum = float(daily_smart["cumulative_net"].iloc[-1]) if not daily_smart.empty else np.nan
-top_buyer = top_buy.iloc[0] if not top_buy.empty else None
-top_seller = top_sell.iloc[0] if not top_sell.empty else None
-conviction = conviction_score(signal_row.get("bandar_signal"), foreign_5d, scan_10d, selected_ticker)
-score_value = float(conviction["score"])
-score_tone_name, score_color = score_tone(score_value)
-alerts = contradiction_alerts(signal_row.get("bandar_signal"), ret_5d, ret_10d, foreign_5d, smart_cum)
-
-sig_10d = scan_10d[scan_10d["significant"].eq(True)].copy() if not scan_10d.empty else pd.DataFrame()
-if sig_10d.empty:
-    verdict = (
-        f"{selected_ticker} shows {fmt_signal(signal_row.get('bandar_signal'))} with {fmt_pct(ret_5d)} over 5D and "
-        f"{fmt_pct(ret_10d)} over 10D. The current read is directional, but broker-specific 10D validation is not yet statistically strong."
-    )
-else:
-    best = sig_10d.sort_values(["p_value_one_sided", "mean_fwd_return"], ascending=[True, False]).iloc[0]
-    verdict = (
-        f"{selected_ticker} shows {fmt_signal(signal_row.get('bandar_signal'))}. Broker {best['broker_code']} is the strongest 10D validation: "
-        f"{int(best['n_events'])} events, mean return {fmt_pct(best['mean_fwd_return'])}, "
-        f"win rate {best['win_rate']:.0%}, p-value {best['p_value_one_sided']:.4f}."
-    )
-
-render_page_header(selected_ticker, analysis_ts, window_start, activity_date)
-
-breakdown = (
-    f"Granger p-value component: {conviction['causality_component']:.0f}/100 "
-    f"(p={conviction['p_value'] if conviction['p_value'] is not None and pd.notna(conviction['p_value']) else 'n/a'}); "
-    f"Signal component: {conviction['signal_component']:.0f}/100; "
-    f"Foreign 5D component: {conviction['foreign_component']:.0f}/100; "
-    f"Broker win-rate component: {conviction['broker_component']:.0f}/100 ({conviction['broker_note']})."
-)
-
-k1, k2, k3, k4, k5, k6 = st.columns(6)
-with k1:
-    render_metric_card("Conviction Score", f"{score_value:.1f}/100", "weighted model", score_tone_name, breakdown)
-with k2:
-    render_metric_card("Signal", fmt_signal(signal_row.get("bandar_signal")), "selected date")
-with k3:
-    render_metric_card("5D Return", fmt_pct(ret_5d), "price context", "positive" if (ret_5d or 0) >= 0 else "negative")
-with k4:
-    render_metric_card("Foreign Net 5D", fmt_rp(foreign_5d), "broker summary", "positive" if foreign_5d >= 0 else "negative")
-with k5:
-    render_metric_card("Top Buyer", str(top_buyer["broker_code"]) if top_buyer is not None else "-", fmt_rp(top_buyer["net_value"]) if top_buyer is not None else "", "positive")
-with k6:
-    render_metric_card("Smart Cumulative", fmt_rp(smart_cum), f"{len(daily_smart)} broker days", "positive" if (smart_cum or 0) >= 0 else "negative")
-
-render_alerts(alerts)
-render_verdict(verdict)
-
-overview_tab, flow_tab, causality_tab, validation_tab, screener_tab, raw_tab = st.tabs(
-    ["Overview", "Broker Flow", "Causality Insight", "Validation", "Screener", "Raw Tables"]
-)
-
-with overview_tab:
-    left, right = st.columns([1.55, 0.95])
-    with left:
-        st.subheader("Price, Volume, and Signal Context")
-        st.plotly_chart(
-            interactive_price_context(price_df, broker_df, selected_ticker, window_start, analysis_ts),
-            width="stretch",
-            config={"displayModeBar": True, "scrollZoom": True},
+    sig_10d = scan_10d[scan_10d["significant"].eq(True)].copy() if not scan_10d.empty else pd.DataFrame()
+    if sig_10d.empty:
+        verdict = (
+            f"{selected_ticker} shows {fmt_signal(signal_row.get('bandar_signal'))} with {fmt_pct(ret_5d)} over 5D and "
+            f"{fmt_pct(ret_10d)} over 10D. The current read is directional, but broker-specific 10D validation is not yet statistically strong."
         )
-    with right:
-        st.subheader("Top Brokers")
-        broker_summary = top_broker_compact_table(top_buy, top_sell, activity_df, analysis_ts)
-        if broker_summary.empty:
-            st.caption("No broker rows for the selected date.")
-        else:
-            st.caption("This table shows broker net buy or sell on the selected analysis date only.")
-            st.dataframe(style_table(broker_summary, money_cols=["Net on Analysis Date"]), width="stretch", hide_index=True, height=246)
+    else:
+        best = sig_10d.sort_values(["p_value_one_sided", "mean_fwd_return"], ascending=[True, False]).iloc[0]
+        verdict = (
+            f"{selected_ticker} shows {fmt_signal(signal_row.get('bandar_signal'))}. Broker {best['broker_code']} is the strongest 10D validation: "
+            f"{int(best['n_events'])} events, mean return {fmt_pct(best['mean_fwd_return'])}, "
+            f"win rate {best['win_rate']:.0%}, p-value {best['p_value_one_sided']:.4f}."
+        )
 
-        perf = analysis.price_performance_table(selected_ticker)
-        if not perf.empty:
-            st.caption("Price Performance")
-            perf = perf[perf["timeframe"].isin(["1D", "1W", "1M", "3M", "6M", "YTD"])]
-            perf_view = perf.rename(columns={"timeframe": "Period", "return": "Return"})
-            st.dataframe(style_table(perf_view, pct_cols=["Return"]), width="stretch", hide_index=True, height=142)
+    render_page_header(selected_ticker, analysis_ts, window_start, activity_date)
 
-    lower_left, lower_right = st.columns([1.1, 0.9])
-    with lower_left:
-        st.subheader("Smart-Money Daily Flow")
-        st.plotly_chart(interactive_smart_flow(daily_smart), width="stretch", config={"displayModeBar": True, "scrollZoom": True})
-    with lower_right:
-        st.subheader("Profile Net Flow")
-        profile_view = profile_compact_table(profile_df)
-        if profile_view.empty:
-            st.caption("No profile flow for this window.")
-        else:
-            st.dataframe(style_table(profile_view, money_cols=["Net"]), width="stretch", hide_index=True, height=246)
-            with st.expander("Broker detail by profile", expanded=False):
-                detail_view = profile_broker_detail_table(activity_window)
+    breakdown = (
+        f"Granger p-value component: {conviction['causality_component']:.0f}/100 "
+        f"(p={conviction['p_value'] if conviction['p_value'] is not None and pd.notna(conviction['p_value']) else 'n/a'}); "
+        f"Signal component: {conviction['signal_component']:.0f}/100; "
+        f"Foreign 5D component: {conviction['foreign_component']:.0f}/100; "
+        f"Broker win-rate component: {conviction['broker_component']:.0f}/100 ({conviction['broker_note']})."
+    )
+
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    with k1:
+        render_metric_card("Conviction Score", f"{score_value:.1f}/100", "weighted model", score_tone_name, breakdown)
+    with k2:
+        render_metric_card("Signal", fmt_signal(signal_row.get("bandar_signal")), "selected date")
+    with k3:
+        render_metric_card("5D Return", fmt_pct(ret_5d), "price context", "positive" if (ret_5d or 0) >= 0 else "negative")
+    with k4:
+        render_metric_card("Foreign Net 5D", fmt_rp(foreign_5d), "broker summary", "positive" if foreign_5d >= 0 else "negative")
+    with k5:
+        render_metric_card("Top Buyer", str(top_buyer["broker_code"]) if top_buyer is not None else "-", fmt_rp(top_buyer["net_value"]) if top_buyer is not None else "", "positive")
+    with k6:
+        render_metric_card("Smart Cumulative", fmt_rp(smart_cum), f"{len(daily_smart)} broker days", "positive" if (smart_cum or 0) >= 0 else "negative")
+
+    render_alerts(alerts)
+    render_verdict(verdict)
+
+    overview_tab, flow_tab, causality_tab, validation_tab, screener_tab, raw_tab = st.tabs(
+        ["Overview", "Broker Flow", "Causality Insight", "Validation", "Screener", "Raw Tables"]
+    )
+
+    with overview_tab:
+        left, right = st.columns([1.55, 0.95])
+        with left:
+            st.subheader("Price, Volume, and Signal Context")
+            st.plotly_chart(
+                interactive_price_context(price_df, broker_df, selected_ticker, window_start, analysis_ts),
+                width="stretch",
+                config={"displayModeBar": True, "scrollZoom": True},
+            )
+        with right:
+            st.subheader("Top Brokers")
+            broker_summary = top_broker_compact_table(top_buy, top_sell, activity_df, analysis_ts)
+            if broker_summary.empty:
+                st.caption("No broker rows for the selected date.")
+            else:
+                st.caption("This table shows broker net buy or sell on the selected analysis date only.")
+                st.dataframe(style_table(broker_summary, money_cols=["Net on Analysis Date"]), width="stretch", hide_index=True, height=246)
+
+            perf = analysis.price_performance_table(selected_ticker)
+            if not perf.empty:
+                st.caption("Price Performance")
+                perf = perf[perf["timeframe"].isin(["1D", "1W", "1M", "3M", "6M", "YTD"])]
+                perf_view = perf.rename(columns={"timeframe": "Period", "return": "Return"})
+                st.dataframe(style_table(perf_view, pct_cols=["Return"]), width="stretch", hide_index=True, height=142)
+
+        lower_left, lower_right = st.columns([1.1, 0.9])
+        with lower_left:
+            st.subheader("Smart-Money Daily Flow")
+            st.plotly_chart(interactive_smart_flow(daily_smart), width="stretch", config={"displayModeBar": True, "scrollZoom": True})
+        with lower_right:
+            st.subheader("Profile Net Flow")
+            profile_view = profile_compact_table(profile_df)
+            if profile_view.empty:
+                st.caption("No profile flow for this window.")
+            else:
+                st.dataframe(style_table(profile_view, money_cols=["Net"]), width="stretch", hide_index=True, height=246)
+                with st.expander("Broker detail by profile", expanded=False):
+                    detail_view = profile_broker_detail_table(activity_window)
+                    st.dataframe(
+                        style_table(detail_view, money_cols=["Buy", "Sell", "Net", "Avg Value / Tx"]),
+                        width="stretch",
+                        hide_index=True,
+                        height=320,
+                    )
+
+    with flow_tab:
+        st.subheader("Broker Drill-Down")
+        broker_codes = sorted(activity_window["broker_code"].dropna().unique().tolist())
+        ranked_codes = (
+            activity_window.assign(abs_net=activity_window["net_value"].abs())
+            .groupby("broker_code")["abs_net"]
+            .sum()
+            .sort_values(ascending=False)
+            .index.tolist()
+        )
+        default_codes = ranked_codes[:3] if ranked_codes else broker_codes[:3]
+        c1, c2, c3, c4 = st.columns([0.8, 0.9, 1.7, 0.9])
+        with c1:
+            compare_mode = st.toggle("Compare mode", value=True)
+        with c2:
+            max_brokers = st.selectbox("Max brokers", [3, 5, 8, 12, "All"], index=1)
+        with c3:
+            max_selections = None if max_brokers == "All" else int(max_brokers)
+            default_selection = default_codes[: min(len(default_codes), max_selections or len(default_codes))]
+            selected_brokers = st.multiselect("Broker codes", broker_codes, default=default_selection, max_selections=max_selections)
+        with c4:
+            flow_mode = st.selectbox("Flow mode", ["Cumulative", "Daily"])
+        st.caption("Cumulative mode sums broker net flow across the selected broker window. Daily mode shows each date separately.")
+        st.plotly_chart(interactive_broker_compare(activity_window, selected_brokers, flow_mode), width="stretch", config={"displayModeBar": True, "scrollZoom": True})
+
+        left, right = st.columns([0.95, 1.05])
+        with left:
+            st.subheader("Broker Profile Flow")
+            render_profile_flow(profile_df)
+            profile_options = ["All Profiles"] + [row["label"] for _, row in profile_df.iterrows()] if not profile_df.empty else ["All Profiles"]
+            selected_profile_label = st.selectbox("Profile detail", profile_options)
+            selected_profile_key = None
+            if selected_profile_label != "All Profiles" and not profile_df.empty:
+                selected_profile_key = profile_df[profile_df["label"] == selected_profile_label]["profile"].iloc[0]
+            detail_view = profile_broker_detail_table(activity_window, selected_profile_key)
+            if detail_view.empty:
+                st.caption("No broker detail for this profile.")
+            else:
                 st.dataframe(
                     style_table(detail_view, money_cols=["Buy", "Sell", "Net", "Avg Value / Tx"]),
                     width="stretch",
                     hide_index=True,
-                    height=320,
+                    height=360,
                 )
-
-with flow_tab:
-    st.subheader("Broker Drill-Down")
-    broker_codes = sorted(activity_window["broker_code"].dropna().unique().tolist())
-    ranked_codes = (
-        activity_window.assign(abs_net=activity_window["net_value"].abs())
-        .groupby("broker_code")["abs_net"]
-        .sum()
-        .sort_values(ascending=False)
-        .index.tolist()
-    )
-    default_codes = ranked_codes[:3] if ranked_codes else broker_codes[:3]
-    c1, c2, c3, c4 = st.columns([0.8, 0.9, 1.7, 0.9])
-    with c1:
-        compare_mode = st.toggle("Compare mode", value=True)
-    with c2:
-        max_brokers = st.selectbox("Max brokers", [3, 5, 8, 12, "All"], index=1)
-    with c3:
-        max_selections = None if max_brokers == "All" else int(max_brokers)
-        default_selection = default_codes[: min(len(default_codes), max_selections or len(default_codes))]
-        selected_brokers = st.multiselect("Broker codes", broker_codes, default=default_selection, max_selections=max_selections)
-    with c4:
-        flow_mode = st.selectbox("Flow mode", ["Cumulative", "Daily"])
-    st.caption("Cumulative mode sums broker net flow across the selected broker window. Daily mode shows each date separately.")
-    st.plotly_chart(interactive_broker_compare(activity_window, selected_brokers, flow_mode), width="stretch", config={"displayModeBar": True, "scrollZoom": True})
-
-    left, right = st.columns([0.95, 1.05])
-    with left:
-        st.subheader("Broker Profile Flow")
-        render_profile_flow(profile_df)
-        profile_options = ["All Profiles"] + [row["label"] for _, row in profile_df.iterrows()] if not profile_df.empty else ["All Profiles"]
-        selected_profile_label = st.selectbox("Profile detail", profile_options)
-        selected_profile_key = None
-        if selected_profile_label != "All Profiles" and not profile_df.empty:
-            selected_profile_key = profile_df[profile_df["label"] == selected_profile_label]["profile"].iloc[0]
-        detail_view = profile_broker_detail_table(activity_window, selected_profile_key)
-        if detail_view.empty:
-            st.caption("No broker detail for this profile.")
-        else:
-            st.dataframe(
-                style_table(detail_view, money_cols=["Buy", "Sell", "Net", "Avg Value / Tx"]),
-                width="stretch",
-                hide_index=True,
-                height=360,
-            )
-    with right:
-        st.subheader("Broker Distribution")
-        available_dist_dates = sorted(activity_window["date"].dt.date.unique().tolist())
-        d1, d2 = st.columns([0.8, 1.2])
-        with d1:
-            distribution_mode = st.selectbox("Distribution mode", ["Single day", "Date range"])
-        with d2:
-            if distribution_mode == "Single day":
-                dist_date = st.selectbox("Distribution date", available_dist_dates, index=len(available_dist_dates) - 1)
-                dist_start = pd.Timestamp(dist_date)
-                dist_end = pd.Timestamp(dist_date)
-            else:
-                default_start = available_dist_dates[max(0, len(available_dist_dates) - 5)]
-                range_value = st.date_input(
-                    "Distribution range",
-                    value=(default_start, available_dist_dates[-1]),
-                    min_value=available_dist_dates[0],
-                    max_value=available_dist_dates[-1],
-                )
-                if isinstance(range_value, tuple) and len(range_value) == 2:
-                    dist_start = pd.Timestamp(range_value[0])
-                    dist_end = pd.Timestamp(range_value[1])
+        with right:
+            st.subheader("Broker Distribution")
+            available_dist_dates = sorted(activity_window["date"].dt.date.unique().tolist())
+            d1, d2 = st.columns([0.8, 1.2])
+            with d1:
+                distribution_mode = st.selectbox("Distribution mode", ["Single day", "Date range"])
+            with d2:
+                if distribution_mode == "Single day":
+                    dist_date = st.selectbox("Distribution date", available_dist_dates, index=len(available_dist_dates) - 1)
+                    dist_start = pd.Timestamp(dist_date)
+                    dist_end = pd.Timestamp(dist_date)
                 else:
-                    dist_start = pd.Timestamp(available_dist_dates[-1])
-                    dist_end = pd.Timestamp(available_dist_dates[-1])
+                    default_start = available_dist_dates[max(0, len(available_dist_dates) - 5)]
+                    range_value = st.date_input(
+                        "Distribution range",
+                        value=(default_start, available_dist_dates[-1]),
+                        min_value=available_dist_dates[0],
+                        max_value=available_dist_dates[-1],
+                    )
+                    if isinstance(range_value, tuple) and len(range_value) == 2:
+                        dist_start = pd.Timestamp(range_value[0])
+                        dist_end = pd.Timestamp(range_value[1])
+                    else:
+                        dist_start = pd.Timestamp(available_dist_dates[-1])
+                        dist_end = pd.Timestamp(available_dist_dates[-1])
 
-        dist = activity_window[
-            (activity_window["date"] >= dist_start) & (activity_window["date"] <= dist_end)
-        ].copy()
-        if not dist.empty:
-            dist = (
-                dist.groupby(["broker_code", "participant_type"], dropna=False)
-                .agg(
-                    buy_value=("buy_value", "sum"),
-                    sell_value=("sell_value", "sum"),
-                    net_value=("net_value", "sum"),
-                    frequency=("frequency", "sum"),
-                    buy_lot=("buy_lot", "sum"),
-                    sell_lot=("sell_lot", "sum"),
-                    buy_avg_price=("buy_avg_price", "mean"),
-                    sell_avg_price=("sell_avg_price", "mean"),
+            dist = activity_window[
+                (activity_window["date"] >= dist_start) & (activity_window["date"] <= dist_end)
+            ].copy()
+            if not dist.empty:
+                dist = (
+                    dist.groupby(["broker_code", "participant_type"], dropna=False)
+                    .agg(
+                        buy_value=("buy_value", "sum"),
+                        sell_value=("sell_value", "sum"),
+                        net_value=("net_value", "sum"),
+                        frequency=("frequency", "sum"),
+                        buy_lot=("buy_lot", "sum"),
+                        sell_lot=("sell_lot", "sum"),
+                        buy_avg_price=("buy_avg_price", "mean"),
+                        sell_avg_price=("sell_avg_price", "mean"),
+                    )
+                    .reset_index()
                 )
-                .reset_index()
-            )
-        if dist.empty:
-            st.caption("No distribution rows for this date range.")
-        else:
-            distribution_api = {}
-            try:
-                distribution_api = cached_broker_distribution_api(selected_ticker, dist_start, dist_end)
-            except Exception as exc:  # noqa: BLE001
+            if dist.empty:
+                st.caption("No distribution rows for this date range.")
+            else:
                 distribution_api = {}
-                st.caption(f"Live distribution API unavailable for this date: {type(exc).__name__}. Falling back to estimated matching.")
-            if distribution_api:
-                st.caption("The flow chart below uses broker-to-broker distribution edges returned by the live API.")
-            else:
-                st.caption("Exact broker-to-broker counterparties are unavailable. The flow chart below falls back to estimated same-day matching based on broker net buy and sell totals.")
-            st.plotly_chart(
-                broker_distribution_sankey(dist, dist_end, distribution_data=distribution_api, top_n=8),
-                width="stretch",
-                config={"displayModeBar": True, "scrollZoom": True},
-            )
-            st.caption("Broker Summary")
-            summary_view = broker_summary_table(dist, distribution_data=distribution_api, top_n=10)
-            st.dataframe(
-                summary_view.style.format(
-                    {
-                        "Buy Value": fmt_rp,
-                        "Sell Value": fmt_rp,
-                        "Buy Lot": lambda v: "-" if pd.isna(v) else f"{float(v):,.1f}K" if abs(float(v)) >= 1_000 else f"{float(v):,.0f}",
-                        "Sell Lot": lambda v: "-" if pd.isna(v) else f"{float(v):,.1f}K" if abs(float(v)) >= 1_000 else f"{float(v):,.0f}",
-                        "Buy Avg": lambda v: "-" if pd.isna(v) else f"{float(v):,.0f}",
-                        "Sell Avg": lambda v: "-" if pd.isna(v) else f"{float(v):,.0f}",
-                    }
-                ),
-                width="stretch",
-                hide_index=True,
-                height=320,
-            )
-            st.caption("Detailed broker rows")
-            dist_view = dist[["broker_code", "participant_type", "buy_value", "sell_value", "net_value", "frequency"]].rename(
-                columns={
-                    "broker_code": "Broker",
-                    "participant_type": "Type",
-                    "buy_value": "Buy",
-                    "sell_value": "Sell",
-                    "net_value": "Net",
-                    "frequency": "Freq",
-                }
-            )
-            dist_view["Type"] = dist_view["Type"].map(participant_label)
-            dist_view["Avg Value / Tx"] = dist_view.apply(lambda r: abs(float(r["Net"] or 0)) / max(float(r["Freq"] or 0), 1), axis=1)
-            dist_view["Sub-type"] = dist_view.apply(broker_subtype, axis=1)
-            st.dataframe(style_table(dist_view, money_cols=["Buy", "Sell", "Net", "Avg Value / Tx"]), width="stretch", hide_index=True)
-
-with causality_tab:
-    st.subheader("Causality Insight")
-    foreign_causality = cached_causality(selected_ticker)
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        if foreign_causality:
-            render_metric_card(
-                "Foreign Flow Granger",
-                "Significant" if foreign_causality["is_significant"] else "Not Significant",
-                f"p={foreign_causality['min_p_value']:.4f}, lag {foreign_causality['best_lag']}",
-                "positive" if foreign_causality["is_significant"] else "warning",
-            )
-        else:
-            render_metric_card("Foreign Flow Granger", "Unavailable", "insufficient observations", "warning")
-    with c2:
-        render_metric_card("Conviction Model", f"{score_value:.1f}/100", "hover score card for formula", score_tone_name)
-    with c3:
-        render_metric_card("Broker Validation", conviction["broker_note"], "historical forward returns")
-
-    left, right = st.columns(2)
-    with left:
-        st.subheader("Participant Type")
-        part_causality = analysis.causality_by_participant(selected_ticker, max_lags=5)
-        if part_causality.empty:
-            st.caption("Insufficient participant history.")
-        else:
-            part_view = part_causality.rename(
-                columns={"participant_type": "Participant", "best_lag": "Lag", "p_value": "P Value", "significant": "Significant"}
-            )
-            part_view["Participant"] = part_view["Participant"].map(english_text)
-            st.dataframe(part_view.style.format({"P Value": "{:.4f}"}), width="stretch", hide_index=True)
-    with right:
-        st.subheader("Top Broker Causality")
-        broker_causality = analysis.causality_by_broker(selected_ticker, top_n=15, max_lags=5)
-        if broker_causality.empty:
-            st.caption("Insufficient broker history.")
-        else:
-            broker_view = broker_causality.rename(
-                columns={"broker_code": "Broker", "best_lag": "Lag", "p_value": "P Value", "significant": "Significant"}
-            )
-            st.dataframe(broker_view.style.format({"P Value": "{:.4f}"}), width="stretch", hide_index=True)
-
-with validation_tab:
-    st.subheader("Broker-Specific Return Validation")
-    if scan_h.empty:
-        st.caption("No broker passes the current validation settings.")
-    else:
-        view = scan_h[
-            [
-                "ticker",
-                "broker_code",
-                "n_events",
-                "mean_fwd_return",
-                "median_fwd_return",
-                "win_rate",
-                "avg_net_value",
-                "total_net_value",
-                "p_value_one_sided",
-                "significant",
-            ]
-        ].rename(
-            columns={
-                "ticker": "Ticker",
-                "broker_code": "Broker",
-                "n_events": "Events",
-                "mean_fwd_return": "Mean Return",
-                "median_fwd_return": "Median Return",
-                "win_rate": "Win Rate",
-                "avg_net_value": "Avg Net Buy",
-                "total_net_value": "Total Net Buy",
-                "p_value_one_sided": "P Value",
-                "significant": "Significant",
-            }
-        )
-        st.dataframe(style_table(view, money_cols=["Avg Net Buy", "Total Net Buy"], pct_cols=["Mean Return", "Median Return", "Win Rate"]), width="stretch", hide_index=True)
-
-    st.subheader("Accumulation Event Study")
-    show_individual = st.toggle("Show individual event paths", value=False)
-    event_table = analysis.event_study_table(
-        tickers=[selected_ticker],
-        horizons=(1, 3, 5, 10),
-        lookback_days=lookback_days,
-        signals=list(ACC_SIGNALS),
-    )
-    st.plotly_chart(
-        interactive_event_ribbon(event_table, horizons=(1, 3, 5, 10), show_individual=show_individual),
-        width="stretch",
-        config={"displayModeBar": True, "scrollZoom": True},
-    )
-    if not event_table.empty:
-        event_view = event_table.rename(
-            columns={
-                "ticker": "Ticker",
-                "signal_date": "Signal Date",
-                "bandar_signal": "Signal",
-                "bandar_signal_score": "Signal Score",
-                "t_plus_0d": "Signal Day",
-                "t_plus_1d": "+1D",
-                "t_plus_3d": "+3D",
-                "t_plus_5d": "+5D",
-                "t_plus_10d": "+10D",
-            }
-        )
-        event_view["Signal"] = event_view["Signal"].map(fmt_signal)
-        st.dataframe(event_view, width="stretch", hide_index=True)
-
-with screener_tab:
-    st.subheader("Multi-Ticker Screener")
-    only_acc = st.toggle("Show only Accumulation / Strong Accumulation", value=True)
-    if st.button("Run Screener"):
-        st.session_state["run_screener"] = True
-
-    if st.session_state.get("run_screener"):
-        with st.spinner("Running screener (this may take a while)..."):
-            if "screener_df" not in st.session_state or st.session_state.get("screener_watchlist") != watchlist or st.session_state.get("screener_ts") != analysis_ts:
-                screen_prices = storage.read_prices(watchlist)
-                screen_broker = storage.read_broker_flow(watchlist)
-                screen_activity = storage.read_broker_activity(watchlist)
-                st.session_state["screener_df"] = build_screener(watchlist, analysis_ts, scan_h, screen_prices, screen_broker, screen_activity)
-                st.session_state["screener_watchlist"] = watchlist
-                st.session_state["screener_ts"] = analysis_ts
-
-            screener = st.session_state["screener_df"].copy()
-            if only_acc and not screener.empty:
-                screener = screener[screener["Signal"].isin(["Accumulation", "Strong Accumulation", "Net Buy"])]
-            if screener.empty:
-                st.caption("No tickers match the current screener filter.")
-            else:
+                try:
+                    distribution_api = cached_broker_distribution_api(selected_ticker, dist_start, dist_end)
+                except Exception as exc:  # noqa: BLE001
+                    distribution_api = {}
+                    st.caption(f"Live distribution API unavailable for this date: {type(exc).__name__}. Falling back to estimated matching.")
+                if distribution_api:
+                    st.caption("The flow chart below uses broker-to-broker distribution edges returned by the live API.")
+                else:
+                    st.caption("Exact broker-to-broker counterparties are unavailable. The flow chart below falls back to estimated same-day matching based on broker net buy and sell totals.")
+                st.plotly_chart(
+                    broker_distribution_sankey(dist, dist_end, distribution_data=distribution_api, top_n=8),
+                    width="stretch",
+                    config={"displayModeBar": True, "scrollZoom": True},
+                )
+                st.caption("Broker Summary")
+                summary_view = broker_summary_table(dist, distribution_data=distribution_api, top_n=10)
                 st.dataframe(
-                    style_table(screener, money_cols=["Foreign Net (5D)"], pct_cols=["5D Return"]),
+                    summary_view.style.format(
+                        {
+                            "Buy Value": fmt_rp,
+                            "Sell Value": fmt_rp,
+                            "Buy Lot": lambda v: "-" if pd.isna(v) else f"{float(v):,.1f}K" if abs(float(v)) >= 1_000 else f"{float(v):,.0f}",
+                            "Sell Lot": lambda v: "-" if pd.isna(v) else f"{float(v):,.1f}K" if abs(float(v)) >= 1_000 else f"{float(v):,.0f}",
+                            "Buy Avg": lambda v: "-" if pd.isna(v) else f"{float(v):,.0f}",
+                            "Sell Avg": lambda v: "-" if pd.isna(v) else f"{float(v):,.0f}",
+                        }
+                    ),
                     width="stretch",
                     hide_index=True,
+                    height=320,
                 )
+                st.caption("Detailed broker rows")
+                dist_view = dist[["broker_code", "participant_type", "buy_value", "sell_value", "net_value", "frequency"]].rename(
+                    columns={
+                        "broker_code": "Broker",
+                        "participant_type": "Type",
+                        "buy_value": "Buy",
+                        "sell_value": "Sell",
+                        "net_value": "Net",
+                        "frequency": "Freq",
+                    }
+                )
+                dist_view["Type"] = dist_view["Type"].map(participant_label)
+                dist_view["Avg Value / Tx"] = dist_view.apply(lambda r: abs(float(r["Net"] or 0)) / max(float(r["Freq"] or 0), 1), axis=1)
+                dist_view["Sub-type"] = dist_view.apply(broker_subtype, axis=1)
+                st.dataframe(style_table(dist_view, money_cols=["Buy", "Sell", "Net", "Avg Value / Tx"]), width="stretch", hide_index=True)
 
-with raw_tab:
-    st.subheader("Broker-Flow Rows")
-    flow_view = broker_window[
-        ["date", "bandar_signal", "bandar_signal_score", "foreign_net_broker", "local_net_broker", "total_value"]
-    ].rename(
-        columns={
-            "date": "Date",
-            "bandar_signal": "Signal",
-            "bandar_signal_score": "Score",
-            "foreign_net_broker": "Foreign Net",
-            "local_net_broker": "Local Net",
-            "total_value": "Value",
-        }
-    )
-    flow_view["Signal"] = flow_view["Signal"].map(fmt_signal)
-    st.dataframe(style_table(flow_view, money_cols=["Foreign Net", "Local Net", "Value"]), width="stretch", hide_index=True)
+    with causality_tab:
+        st.subheader("Causality Insight")
+        foreign_causality = cached_causality(selected_ticker)
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            if foreign_causality:
+                render_metric_card(
+                    "Foreign Flow Granger",
+                    "Significant" if foreign_causality["is_significant"] else "Not Significant",
+                    f"p={foreign_causality['min_p_value']:.4f}, lag {foreign_causality['best_lag']}",
+                    "positive" if foreign_causality["is_significant"] else "warning",
+                )
+            else:
+                render_metric_card("Foreign Flow Granger", "Unavailable", "insufficient observations", "warning")
+        with c2:
+            render_metric_card("Conviction Model", f"{score_value:.1f}/100", "hover score card for formula", score_tone_name)
+        with c3:
+            render_metric_card("Broker Validation", conviction["broker_note"], "historical forward returns")
 
-    st.subheader("Broker Activity Rows")
-    activity_view = activity_window[
-        ["date", "broker_code", "participant_type", "buy_value", "sell_value", "net_value", "frequency"]
-    ].rename(
-        columns={
-            "date": "Date",
-            "broker_code": "Broker",
-            "participant_type": "Type",
-            "buy_value": "Buy",
-            "sell_value": "Sell",
-            "net_value": "Net",
-            "frequency": "Freq",
-        }
-    )
-    activity_view["Type"] = activity_view["Type"].map(participant_label)
-    st.dataframe(style_table(activity_view, money_cols=["Buy", "Sell", "Net"]), width="stretch", hide_index=True)
+        left, right = st.columns(2)
+        with left:
+            st.subheader("Participant Type")
+            part_causality = analysis.causality_by_participant(selected_ticker, max_lags=5)
+            if part_causality.empty:
+                st.caption("Insufficient participant history.")
+            else:
+                part_view = part_causality.rename(
+                    columns={"participant_type": "Participant", "best_lag": "Lag", "p_value": "P Value", "significant": "Significant"}
+                )
+                part_view["Participant"] = part_view["Participant"].map(english_text)
+                st.dataframe(part_view.style.format({"P Value": "{:.4f}"}), width="stretch", hide_index=True)
+        with right:
+            st.subheader("Top Broker Causality")
+            broker_causality = analysis.causality_by_broker(selected_ticker, top_n=15, max_lags=5)
+            if broker_causality.empty:
+                st.caption("Insufficient broker history.")
+            else:
+                broker_view = broker_causality.rename(
+                    columns={"broker_code": "Broker", "best_lag": "Lag", "p_value": "P Value", "significant": "Significant"}
+                )
+                st.dataframe(broker_view.style.format({"P Value": "{:.4f}"}), width="stretch", hide_index=True)
 
-try:
-    from urllib.parse import urlparse
-    _u = urlparse(storage.config.DATABASE_URL)
-    _db_info = f"{_u.hostname or 'local'}/{_u.path.lstrip('/') or 'bandarmology'}"
-except Exception:
-    _db_info = "PostgreSQL"
-st.caption(f"Database: {_db_info}")
-st.caption("Created by : Cugarete")
+    with validation_tab:
+        st.subheader("Broker-Specific Return Validation")
+        if scan_h.empty:
+            st.caption("No broker passes the current validation settings.")
+        else:
+            view = scan_h[
+                [
+                    "ticker",
+                    "broker_code",
+                    "n_events",
+                    "mean_fwd_return",
+                    "median_fwd_return",
+                    "win_rate",
+                    "avg_net_value",
+                    "total_net_value",
+                    "p_value_one_sided",
+                    "significant",
+                ]
+            ].rename(
+                columns={
+                    "ticker": "Ticker",
+                    "broker_code": "Broker",
+                    "n_events": "Events",
+                    "mean_fwd_return": "Mean Return",
+                    "median_fwd_return": "Median Return",
+                    "win_rate": "Win Rate",
+                    "avg_net_value": "Avg Net Buy",
+                    "total_net_value": "Total Net Buy",
+                    "p_value_one_sided": "P Value",
+                    "significant": "Significant",
+                }
+            )
+            st.dataframe(style_table(view, money_cols=["Avg Net Buy", "Total Net Buy"], pct_cols=["Mean Return", "Median Return", "Win Rate"]), width="stretch", hide_index=True)
+
+        st.subheader("Accumulation Event Study")
+        show_individual = st.toggle("Show individual event paths", value=False)
+        event_table = analysis.event_study_table(
+            tickers=[selected_ticker],
+            horizons=(1, 3, 5, 10),
+            lookback_days=lookback_days,
+            signals=list(ACC_SIGNALS),
+        )
+        st.plotly_chart(
+            interactive_event_ribbon(event_table, horizons=(1, 3, 5, 10), show_individual=show_individual),
+            width="stretch",
+            config={"displayModeBar": True, "scrollZoom": True},
+        )
+        if not event_table.empty:
+            event_view = event_table.rename(
+                columns={
+                    "ticker": "Ticker",
+                    "signal_date": "Signal Date",
+                    "bandar_signal": "Signal",
+                    "bandar_signal_score": "Signal Score",
+                    "t_plus_0d": "Signal Day",
+                    "t_plus_1d": "+1D",
+                    "t_plus_3d": "+3D",
+                    "t_plus_5d": "+5D",
+                    "t_plus_10d": "+10D",
+                }
+            )
+            event_view["Signal"] = event_view["Signal"].map(fmt_signal)
+            st.dataframe(event_view, width="stretch", hide_index=True)
+
+    with screener_tab:
+        st.subheader("Multi-Ticker Screener")
+        only_acc = st.toggle("Show only Accumulation / Strong Accumulation", value=True)
+        if st.button("Run Screener"):
+            st.session_state["run_screener"] = True
+
+        if st.session_state.get("run_screener"):
+            with st.spinner("Running screener (this may take a while)..."):
+                if "screener_df" not in st.session_state or st.session_state.get("screener_watchlist") != watchlist or st.session_state.get("screener_ts") != analysis_ts:
+                    screen_prices = storage.read_prices(watchlist)
+                    screen_broker = storage.read_broker_flow(watchlist)
+                    screen_activity = storage.read_broker_activity(watchlist)
+                    st.session_state["screener_df"] = build_screener(watchlist, analysis_ts, scan_h, screen_prices, screen_broker, screen_activity)
+                    st.session_state["screener_watchlist"] = watchlist
+                    st.session_state["screener_ts"] = analysis_ts
+
+                screener = st.session_state["screener_df"].copy()
+                if only_acc and not screener.empty:
+                    screener = screener[screener["Signal"].isin(["Accumulation", "Strong Accumulation", "Net Buy"])]
+                if screener.empty:
+                    st.caption("No tickers match the current screener filter.")
+                else:
+                    st.dataframe(
+                        style_table(screener, money_cols=["Foreign Net (5D)"], pct_cols=["5D Return"]),
+                        width="stretch",
+                        hide_index=True,
+                    )
+
+    with raw_tab:
+        st.subheader("Broker-Flow Rows")
+        flow_view = broker_window[
+            ["date", "bandar_signal", "bandar_signal_score", "foreign_net_broker", "local_net_broker", "total_value"]
+        ].rename(
+            columns={
+                "date": "Date",
+                "bandar_signal": "Signal",
+                "bandar_signal_score": "Score",
+                "foreign_net_broker": "Foreign Net",
+                "local_net_broker": "Local Net",
+                "total_value": "Value",
+            }
+        )
+        flow_view["Signal"] = flow_view["Signal"].map(fmt_signal)
+        st.dataframe(style_table(flow_view, money_cols=["Foreign Net", "Local Net", "Value"]), width="stretch", hide_index=True)
+
+        st.subheader("Broker Activity Rows")
+        activity_view = activity_window[
+            ["date", "broker_code", "participant_type", "buy_value", "sell_value", "net_value", "frequency"]
+        ].rename(
+            columns={
+                "date": "Date",
+                "broker_code": "Broker",
+                "participant_type": "Type",
+                "buy_value": "Buy",
+                "sell_value": "Sell",
+                "net_value": "Net",
+                "frequency": "Freq",
+            }
+        )
+        activity_view["Type"] = activity_view["Type"].map(participant_label)
+        st.dataframe(style_table(activity_view, money_cols=["Buy", "Sell", "Net"]), width="stretch", hide_index=True)
+
+    try:
+        from urllib.parse import urlparse
+        _u = urlparse(storage.config.DATABASE_URL)
+        _db_info = f"{_u.hostname or 'local'}/{_u.path.lstrip('/') or 'bandarmology'}"
+    except Exception:
+        _db_info = "PostgreSQL"
+    st.caption(f"Database: {_db_info}")
+    st.caption("Created by : Cugarete")
              
+
+if __name__ == "__main__":
+    main()
