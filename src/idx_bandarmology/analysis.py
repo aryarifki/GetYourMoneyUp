@@ -201,9 +201,10 @@ def top_net_broker_summary(ticker: str, trade_date: pd.Timestamp | str | None = 
     return buyers.reset_index(drop=True), sellers.reset_index(drop=True)
 
 
-def broker_distribution_table(ticker: str, trade_date: pd.Timestamp | str | None = None, top_n: int = 10) -> pd.DataFrame:
+def broker_distribution_table(ticker: str, trade_date: pd.Timestamp | str | None = None, top_n: int = 10, activity: pd.DataFrame | None = None) -> pd.DataFrame:
     """Per-broker buy/sell/net rows for one ticker/date."""
-    activity = storage.read_broker_activity([ticker])
+    if activity is None:
+        activity = storage.read_broker_activity([ticker])
     if activity.empty:
         return pd.DataFrame()
     if trade_date is None:
@@ -267,9 +268,9 @@ def plot_broker_flow(ticker: str, broker_codes: list[str] | None = None, lookbac
     return fig
 
 
-def plot_broker_distribution(ticker: str, trade_date: pd.Timestamp | str | None = None, top_n: int = 12) -> plt.Figure:
+def plot_broker_distribution(ticker: str, trade_date: pd.Timestamp | str | None = None, top_n: int = 12, activity: pd.DataFrame | None = None) -> plt.Figure:
     """Buyer/seller distribution for one ticker/date."""
-    dist = broker_distribution_table(ticker, trade_date=trade_date, top_n=top_n)
+    dist = broker_distribution_table(ticker, trade_date=trade_date, top_n=top_n, activity=activity)
     fig, ax = plt.subplots(figsize=(10, 5))
     if dist.empty:
         ax.text(0.5, 0.5, "No broker distribution rows available.", ha="center", va="center")
