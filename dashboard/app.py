@@ -1408,7 +1408,7 @@ with flow_tab:
     with left:
         st.subheader("Broker Profile Flow")
         render_profile_flow(profile_df)
-        profile_options = ["All Profiles"] + [row["label"] for _, row in profile_df.iterrows()] if not profile_df.empty else ["All Profiles"]
+        profile_options = ["All Profiles"] + profile_df["label"].tolist() if not profile_df.empty else ["All Profiles"]
         selected_profile_label = st.selectbox("Profile detail", profile_options)
         selected_profile_key = None
         if selected_profile_label != "All Profiles" and not profile_df.empty:
