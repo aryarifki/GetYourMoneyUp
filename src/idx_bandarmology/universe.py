@@ -318,26 +318,32 @@ def refresh_master_tickers(force: bool = False) -> int:
     from sqlalchemy import text
     with storage.engine.begin() as conn:
         conn.execute(text("UPDATE tickers SET is_active = FALSE"))
-        for row in rows:
-            conn.execute(
-                text("""
-                INSERT INTO tickers (ticker, name, board, sector, is_active, updated_at)
-                VALUES (:ticker, :name, :board, :sector, TRUE, :updated_at)
-                ON CONFLICT (ticker) DO UPDATE SET
-                  name = EXCLUDED.name,
-                  board = EXCLUDED.board,
-                  sector = EXCLUDED.sector,
-                  is_active = TRUE,
-                  updated_at = EXCLUDED.updated_at
-                """),
-                {
-                    "ticker": row["ticker"],
-                    "name": row["name"],
-                    "board": row["board"],
-                    "sector": row["sector"],
-                    "updated_at": datetime.now(timezone.utc),
-                },
-            )
+
+        now = datetime.now(timezone.utc)
+        params = [
+            {
+                "ticker": row["ticker"],
+                "name": row["name"],
+                "board": row["board"],
+                "sector": row["sector"],
+                "updated_at": now,
+            }
+            for row in rows
+        ]
+
+        conn.execute(
+            text("""
+            INSERT INTO tickers (ticker, name, board, sector, is_active, updated_at)
+            VALUES (:ticker, :name, :board, :sector, TRUE, :updated_at)
+            ON CONFLICT (ticker) DO UPDATE SET
+              name = EXCLUDED.name,
+              board = EXCLUDED.board,
+              sector = EXCLUDED.sector,
+              is_active = TRUE,
+              updated_at = EXCLUDED.updated_at
+            """),
+            params,
+        )
     print(f"[universe] Refreshed {len(rows)} master tickers.")
     return len(rows)
 
