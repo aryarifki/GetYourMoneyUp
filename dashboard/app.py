@@ -12,11 +12,19 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from streamlit_searchbox import st_searchbox
+
+
+
 
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
 from idx_bandarmology import analysis, broker_api, config, pipeline, storage, universe  # noqa: E402
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_cached_universe(mode: str) -> list[str]:
+    return universe.get_universe(mode=mode)
 
 PROFILE_META = {
     "smart_foreign": ("Foreign Smart Money", "Directional foreign institutions"),
@@ -1150,42 +1158,60 @@ st.markdown(
 )
 
 
-all_broker = storage.read_broker_flow()
-all_activity = storage.read_broker_activity()
-all_prices = storage.read_prices()
-if not all_broker.empty:
-    all_broker["ticker"] = all_broker["ticker"].str.upper()
-if not all_activity.empty:
-    all_activity["ticker"] = all_activity["ticker"].str.upper()
-if not all_prices.empty:
-    all_prices["ticker"] = all_prices["ticker"].str.upper()
-
-available_tickers = (
-    sorted(set(all_broker["ticker"].unique()).intersection(set(all_activity["ticker"].unique())))
-    if not all_broker.empty and not all_activity.empty
-    else []
-)
+try:
+    available_tickers = universe.get_master_tickers(active_only=True)
+except Exception:
+    available_tickers = []
 
 with st.sidebar:
     st.header("Controls")
-    st.caption(f"Universe: {config.UNIVERSE_MODE} | Cached: {len(available_tickers)} tickers")
     if not available_tickers:
         st.warning("No ticker has both broker-flow and broker-activity history yet.")
         st.stop()
 
-    default_universe = ",".join(available_tickers)
-    watchlist_input = st.text_input("Universe", value=default_universe)
-    watchlist = [t.strip().upper() for t in watchlist_input.split(",") if t.strip()]
-    watchlist = [t for t in watchlist if t in available_tickers]
+    universe_mode = st.selectbox("Universe", ["watchlist", "idx30", "lq45", "idx80", "all"], index=0)
+    with st.spinner("Resolving universe..."):
+        watchlist = get_cached_universe(universe_mode)
+        watchlist = [t for t in watchlist if t in available_tickers] if available_tickers else watchlist
+
     if not watchlist:
-        st.warning("The selected universe has no broker history.")
+        st.warning("The selected universe has no active tickers.")
         st.stop()
 
-    selected_ticker = st.selectbox("Ticker", watchlist)
+    try:
+        latest_run = storage.read_runs().iloc[0]["run_at"] if not storage.read_runs().empty else "Unknown"
+    except:
+        latest_run = "Unknown"
+    st.caption(f"Universe: {universe_mode.upper()} | Active Tickers: {len(watchlist)} | Data Freshness: {latest_run}")
+
+    def search_tickers(searchterm: str) -> list[str]:
+        searchterm = searchterm.upper() if searchterm else ""
+        return [t for t in watchlist if searchterm in t][:10] if searchterm else watchlist[:10]
+
+    selected_ticker = st_searchbox(
+        search_tickers,
+        key="ticker_search"
+    )
+    if not selected_ticker:
+        selected_ticker = watchlist[0] if watchlist else None
+
+    with st.spinner(f"Loading data for {selected_ticker}..."):
+        price_df = storage.read_prices([selected_ticker]).copy()
+        broker_df = storage.read_broker_flow([selected_ticker]).copy()
+        activity_df = storage.read_broker_activity([selected_ticker]).copy()
+
+        all_prices = price_df
+        all_activity = activity_df
+        all_broker = broker_df
+
     ticker_dates = sorted(all_activity[all_activity["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
     latest_broker_date = max(ticker_dates) if ticker_dates else None
     ticker_price_dates = sorted(all_prices[all_prices["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
     latest_price_date = max(ticker_price_dates) if ticker_price_dates else None
+    if not ticker_dates:
+        st.warning(f'No data found for {selected_ticker}.')
+        st.stop()
+
     if latest_broker_date:
         st.caption(f"Latest broker data: {latest_broker_date}")
     if latest_price_date and latest_price_date != latest_broker_date:
@@ -1194,7 +1220,7 @@ with st.sidebar:
         st.warning("Today is not available until broker-flow data is fetched and stored.")
     analysis_date = st.selectbox("Analysis date", ticker_dates, index=len(ticker_dates) - 1)
     analysis_ts = pd.Timestamp(analysis_date)
-    lookback_label = st.selectbox("Broker window", ["20 calendar days", "30 calendar days", "60 calendar days", "90 calendar days", "180 calendar days"], index=2)
+    lookback_label = st.selectbox("Broker window", ["20 calendar days", "30 calendar days", "60 calendar days", "90 calendar days", "180 calendar days"], index=0)
     lookback_days = int(lookback_label.split()[0])
     horizon_label = st.selectbox("Validation horizon", ["1 trading day", "3 trading days", "5 trading days", "10 trading days"], index=3)
     horizon = int(horizon_label.split()[0])
@@ -1231,11 +1257,9 @@ with st.sidebar:
                 st.rerun()
 
 
-window_start = analysis_ts - pd.Timedelta(days=lookback_days)
-price_df = all_prices[all_prices["ticker"] == selected_ticker].copy()
-broker_df = all_broker[all_broker["ticker"] == selected_ticker].copy()
-activity_df = all_activity[all_activity["ticker"] == selected_ticker].copy()
 
+
+window_start = analysis_ts - pd.Timedelta(days=lookback_days)
 price_window = price_df[(price_df["date"] >= window_start) & (price_df["date"] <= analysis_ts)].copy()
 broker_window = broker_df[(broker_df["date"] >= window_start) & (broker_df["date"] <= analysis_ts)].copy()
 activity_window = activity_df[(activity_df["date"] >= window_start) & (activity_df["date"] <= analysis_ts)].copy()
@@ -1603,17 +1627,30 @@ with validation_tab:
 with screener_tab:
     st.subheader("Multi-Ticker Screener")
     only_acc = st.toggle("Show only Accumulation / Strong Accumulation", value=True)
-    screener = build_screener(watchlist, analysis_ts, scan_h, all_prices, all_broker, all_activity)
-    if only_acc and not screener.empty:
-        screener = screener[screener["Signal"].isin(["Accumulation", "Strong Accumulation", "Net Buy"])]
-    if screener.empty:
-        st.caption("No tickers match the current screener filter.")
-    else:
-        st.dataframe(
-            style_table(screener, money_cols=["Foreign Net (5D)"], pct_cols=["5D Return"]),
-            width="stretch",
-            hide_index=True,
-        )
+    if st.button("Run Screener"):
+        st.session_state["run_screener"] = True
+
+    if st.session_state.get("run_screener"):
+        with st.spinner("Running screener (this may take a while)..."):
+            if "screener_df" not in st.session_state or st.session_state.get("screener_watchlist") != watchlist or st.session_state.get("screener_ts") != analysis_ts:
+                screen_prices = storage.read_prices(watchlist)
+                screen_broker = storage.read_broker_flow(watchlist)
+                screen_activity = storage.read_broker_activity(watchlist)
+                st.session_state["screener_df"] = build_screener(watchlist, analysis_ts, scan_h, screen_prices, screen_broker, screen_activity)
+                st.session_state["screener_watchlist"] = watchlist
+                st.session_state["screener_ts"] = analysis_ts
+
+            screener = st.session_state["screener_df"].copy()
+            if only_acc and not screener.empty:
+                screener = screener[screener["Signal"].isin(["Accumulation", "Strong Accumulation", "Net Buy"])]
+            if screener.empty:
+                st.caption("No tickers match the current screener filter.")
+            else:
+                st.dataframe(
+                    style_table(screener, money_cols=["Foreign Net (5D)"], pct_cols=["5D Return"]),
+                    width="stretch",
+                    hide_index=True,
+                )
 
 with raw_tab:
     st.subheader("Broker-Flow Rows")
