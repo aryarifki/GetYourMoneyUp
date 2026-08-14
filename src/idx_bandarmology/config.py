@@ -33,11 +33,13 @@ def get_database_url() -> str:
         return url
     # Default local PostgreSQL (Debian/Droidspaces)
     user = os.environ.get("DB_USER", "bandar").strip()
-    password = os.environ.get("DB_PASSWORD", "bandar123").strip()
+    password = os.environ.get("DB_PASSWORD", "").strip()
     host = os.environ.get("DB_HOST", "localhost").strip()
     port = os.environ.get("DB_PORT", "5432").strip()
     dbname = os.environ.get("DB_NAME", "bandarmology").strip()
-    return f"postgresql://{user}:{password}@{host}:{port}/{dbname}"
+
+    auth = f"{user}:{password}" if password else user
+    return f"postgresql://{auth}@{host}:{port}/{dbname}"
 
 DATABASE_URL = get_database_url()
 
