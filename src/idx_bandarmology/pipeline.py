@@ -243,7 +243,7 @@ def backfill_broker_history(
         print(f"[pipeline]   -> {n_prices} price rows in {time.monotonic()-t1:.1f}s")
 
     t2 = time.monotonic()
-    print(f"[pipeline] backfilling broker/bandar history...")
+    print("[pipeline] backfilling broker/bandar history...")
     broker_df, activity_df = broker_api.fetch_historical_broker_data(syms, start_date, end_date)
     n_broker = storage.upsert_broker_flow(broker_df)
     n_activity = storage.upsert_broker_activity(activity_df)
