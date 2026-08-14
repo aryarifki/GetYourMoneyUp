@@ -153,10 +153,6 @@ def run(
                     print(f"[pipeline]   batch {i//broker_batch_size + 1}/{(len(target_syms)-1)//broker_batch_size + 1}: {len(batch)} tickers")
                     batch_results = broker_api.fetch_watchlist(batch, progress_every=max(1, len(batch)//5))
                     all_results.update(batch_results)
-                    if i + broker_batch_size < len(target_syms):
-                        pause = 10.0
-                        print(f"[pipeline]   pausing {pause:.0f}s between batches...")
-                        time.sleep(pause)
                 broker_results = all_results
             else:
                 broker_results = broker_api.fetch_watchlist(target_syms, progress_every=max(1, len(target_syms)//10))
