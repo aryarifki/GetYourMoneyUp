@@ -664,16 +664,16 @@ def interactive_event_ribbon(event_table: pd.DataFrame, horizons: tuple[int, ...
     color = "#0f9f6e" if mean_plus_5 >= 100 else "#dc3545"
     x_labels = ["Signal", *[f"+{h}D" for h in horizons]]
     if show_individual:
-        for idx, row in event_table.iterrows():
+        for row in event_table.itertuples():
             fig.add_trace(
                 go.Scatter(
                     x=x_labels,
-                    y=[row[col] for col in cols],
+                    y=[getattr(row, col) for col in cols],
                     mode="lines",
                     line=dict(color="#94a3b8", width=1),
                     opacity=0.25,
                     showlegend=False,
-                    hovertemplate=f"{row.get('ticker', '')} | {pd.Timestamp(row.get('signal_date')).date()}<br>%{{x}}: %{{y:.2f}}<extra></extra>",
+                    hovertemplate=f"{getattr(row, 'ticker', '')} | {pd.Timestamp(getattr(row, 'signal_date', None)).date()}<br>%{{x}}: %{{y:.2f}}<extra></extra>",
                 )
             )
     fig.add_trace(go.Scatter(x=x_labels, y=q75.values, mode="lines", line=dict(width=0), showlegend=False, hoverinfo="skip"))
