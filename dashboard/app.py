@@ -1229,7 +1229,10 @@ with st.sidebar:
 
     st.divider()
     if st.button("Run latest pipeline to today"):
-        result = pipeline.run(universe_mode=config.UNIVERSE_MODE)
+        if universe_mode in ["all", "idx80"]:
+            st.info("Running pipeline for a large universe. This may take a significant amount of time.")
+        with st.spinner("Running pipeline... Please wait, large universes may take a significant amount of time."):
+            result = pipeline.run(universe_mode=universe_mode, price_period="5d")
         if result["n_broker"] == 0:
             st.error("No broker-flow rows were stored. Check whether the Stockbit/BROKER_API_TOKEN is still valid or whether the upstream endpoint has data.")
         else:
@@ -1239,7 +1242,10 @@ with st.sidebar:
     if latest_broker_date and latest_broker_date < date.today():
         missing_start = latest_broker_date + timedelta(days=1)
         if st.button(f"Fetch missing broker dates ({missing_start} to {date.today()})"):
-            result = pipeline.backfill_broker_history(universe_mode=config.UNIVERSE_MODE, start_date=missing_start, end_date=date.today(), refresh_prices=True)
+            if universe_mode in ["all", "idx80"]:
+                st.info("Running pipeline for a large universe. This may take a significant amount of time.")
+            with st.spinner("Running pipeline... Please wait, large universes may take a significant amount of time."):
+                result = pipeline.backfill_broker_history(universe_mode=universe_mode, start_date=missing_start, end_date=date.today(), refresh_prices=True)
             if result["n_broker"] == 0:
                 st.error("No missing broker rows were stored. The broker API returned no usable rows; refresh the Stockbit token or try again after broker data is published.")
             else:
@@ -1249,7 +1255,10 @@ with st.sidebar:
     backfill_range = st.date_input("Historical backfill range", value=(date.today() - timedelta(days=90), date.today()))
     if st.button("Backfill broker history"):
         if isinstance(backfill_range, tuple) and len(backfill_range) == 2:
-            result = pipeline.backfill_broker_history(universe_mode=config.UNIVERSE_MODE, start_date=backfill_range[0], end_date=backfill_range[1], refresh_prices=True)
+            if universe_mode in ["all", "idx80"]:
+                st.info("Running pipeline for a large universe. This may take a significant amount of time.")
+            with st.spinner("Running pipeline... Please wait, large universes may take a significant amount of time."):
+                result = pipeline.backfill_broker_history(universe_mode=universe_mode, start_date=backfill_range[0], end_date=backfill_range[1], refresh_prices=True)
             if result["n_broker"] == 0:
                 st.error("No broker rows were stored for that range. The broker API returned no usable rows; refresh the Stockbit token or check the selected dates.")
             else:
