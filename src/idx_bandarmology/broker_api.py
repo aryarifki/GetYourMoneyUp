@@ -16,6 +16,7 @@ English summary string for quick display in the dashboard.
 
 from __future__ import annotations
 
+import concurrent.futures
 import threading
 import time
 from datetime import date, datetime, timedelta
@@ -687,15 +688,24 @@ def _overall_summary(sym: str, r: dict[str, Any]) -> str:
 def fetch_watchlist(symbols: list[str], progress_every: int = 10) -> dict[str, dict[str, Any]]:
     """Run fetch_analysis for each symbol. Never raises.
 
-    For large universes this is intentionally sequential (respects rate limit).
+    Uses concurrent.futures to speed up fetching while respecting the rate limit.
     """
     out: dict[str, dict[str, Any]] = {}
     total = len(symbols)
-    for i, s in enumerate(symbols, 1):
-        try:
-            out[_sym(s)] = fetch_analysis(s)
-        except Exception as exc:  # noqa: BLE001
-            out[_sym(s)] = {"ticker": _sym(s), "available": False, "reason": str(exc)[:160]}
-        if i % progress_every == 0 or i == total:
-            print(f"[broker_api] watchlist progress {i}/{total} ({i/total*100:.1f}%)")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_sym = {executor.submit(fetch_analysis, s): s for s in symbols}
+
+        completed = 0
+        for future in concurrent.futures.as_completed(future_to_sym):
+            s = future_to_sym[future]
+            try:
+                out[_sym(s)] = future.result()
+            except Exception as exc:  # noqa: BLE001
+                out[_sym(s)] = {"ticker": _sym(s), "available": False, "reason": str(exc)[:160]}
+
+            completed += 1
+            if completed % progress_every == 0 or completed == total:
+                print(f"[broker_api] watchlist progress {completed}/{total} ({completed/total*100:.1f}%)")
+
     return out
