@@ -20,11 +20,12 @@ from streamlit_searchbox import st_searchbox
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
-from idx_bandarmology import analysis, broker_api, config, pipeline, storage, universe  # noqa: E402
+from idx_bandarmology import analysis, broker_api, config, pipeline, storage  # noqa: E402
+from idx_bandarmology.universe import get_universe, get_master_tickers
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_cached_universe(mode: str) -> list[str]:
-    return universe.get_universe(mode=mode)
+    return get_universe(mode=mode)
 
 PROFILE_META = {
     "smart_foreign": ("Foreign Smart Money", "Directional foreign institutions"),
@@ -1159,7 +1160,7 @@ st.markdown(
 
 
 try:
-    available_tickers = universe.get_master_tickers(active_only=True)
+    available_tickers = get_master_tickers(active_only=True)
 except Exception:
     available_tickers = []
 
