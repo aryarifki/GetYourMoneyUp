@@ -1,4 +1,4 @@
-"""Pipeline orchestrator — scrape -> clean -> store, one call to run it all.
+<"""Pipeline orchestrator — scrape -> clean -> store, one call to run it all.
 
 Enhanced for large universes:
   * Rate-limited broker fetching (safe for 900 tickers).
@@ -27,6 +27,7 @@ from __future__ import annotations
 import time
 from datetime import date, datetime, timezone
 from typing import Any
+
 import pandas as pd
 
 from . import broker_api, config, prices, storage, universe
@@ -60,28 +61,19 @@ def _broker_flow_rows(watchlist_results: dict) -> pd.DataFrame:
         })
     return pd.DataFrame(rows)
 
+
 def _already_fetched_today(tickers: list[str], table: str = "broker_flow") -> list[str]:
+    """Return tickers that already have a row for today in the given table."""
     if not tickers:
         return []
     today = datetime.now(timezone.utc).date().isoformat()
     from sqlalchemy import text
-    # Cek juga data terakhir 3 hari ke belakang (handle weekend/holiday)
-    q = f"""
-        SELECT DISTINCT ticker FROM {table} 
-        WHERE date >= (CURRENT_DATE - INTERVAL '3 days') 
-        AND ticker = ANY(:tickers)
-    """
+    q = f"SELECT DISTINCT ticker FROM {table} WHERE date = :today AND ticker = ANY(:tickers)"
     with storage.engine.connect() as conn:
-        df = pd.read_sql(text(q), conn, params={"tickers": [t.upper() for t in tickers]})
+        df = pd.read_sql(text(q), conn, params={"today": today, "tickers": [t.upper() for t in tickers]})
     return df["ticker"].str.upper().tolist() if not df.empty else []
 
-if date.today().weekday() >= 5:  # 5 = Sabtu, 6 = Minggu
-    return {
-        "tickers": syms, "mode": mode_label,
-        "n_prices": 0, "n_broker": 0, "n_activity": 0,
-        "elapsed_seconds": 0, "notes": "skipped: weekend (market closed)",
-    }
- 
+
 def run(
     tickers: list[str] | None = None,
     universe_mode: str | None = None,
@@ -90,6 +82,16 @@ def run(
     resume: bool = True,
     broker_batch_size: int | None = None,
 ) -> dict[str, Any]:
+    
+    # ── SKIP WEEKEND ──
+    if date.today().weekday() >= 5:
+        print("[pipeline] Weekend detected — market closed, skipping broker fetch.")
+        return {
+            "tickers": [], "mode": "weekend",
+            "n_prices": 0, "n_broker": 0, "n_activity": 0,
+            "elapsed_seconds": 0, "notes": "skipped: weekend (market closed)",
+        }
+
     """Run the full pipeline once. Returns a summary dict with timing.
 
     Parameters
