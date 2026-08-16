@@ -1206,49 +1206,47 @@ with st.sidebar:
         all_broker = broker_df
 
     # ── LAZY FETCH: ambil dari API jika data belum ada di DB ──
-    if activity_df.empty and broker_api.is_available():
-        with st.spinner(f"Fetching live data for {selected_ticker}..."):
-            try:
-                # Gunakan fetch_analysis (latest available, lebih reliable)
-                result = broker_api.fetch_analysis(selected_ticker)
+        if activity_df.empty and broker_api.is_available():
+            with st.spinner(f"Fetching live data for {selected_ticker}..."):
+                try:
+                    # Gunakan fetch_analysis (latest available, lebih reliable)
+                    result = broker_api.fetch_analysis(selected_ticker)
                 
-                if result.get("available"):
-                    # 1) Simpan broker_flow
-                    from idx_bandarmology import pipeline
-                    flow_rows = pipeline._broker_flow_rows({selected_ticker: result})
-                    if not flow_rows.empty:
-                        storage.upsert_broker_flow(flow_rows)
+                    if result.get("available"):
+                        # 1) Simpan broker_flow
+                        from idx_bandarmology import pipeline
+                        flow_rows = pipeline._broker_flow_rows({selected_ticker: result})
+                        if not flow_rows.empty:
+                            storage.upsert_broker_flow(flow_rows)
                     
-                    # 2) Simpan broker_activity dari raw marketdetector response
-                    #    fetch_analysis tidak expose raw md, jadi panggil langsung
-                    sym = selected_ticker.upper().replace(".JK", "").strip()
-                    raw_md = broker_api._get(f"/marketdetectors/{sym}").get("data", {}) or {}
+                        # 2) Simpan broker_activity dari raw marketdetector response
+                        #    fetch_analysis tidak expose raw md, jadi panggil langsung
+                        sym = selected_ticker.upper().replace(".JK", "").strip()
+                        raw_md = broker_api._get(f"/marketdetectors/{sym}").get("data", {}) or {}
                     
-                    if raw_md:
-                        from datetime import datetime
-                        fetched_at = datetime.utcnow().isoformat()
-                        act_rows = broker_api._broker_activity_rows(sym, raw_md, fetched_at)
-                        if act_rows:
-                            act_df = pd.DataFrame(act_rows)
-                            storage.upsert_broker_activity(act_df)
+                        if raw_md:
+                            from datetime import datetime
+                            fetched_at = datetime.utcnow().isoformat()
+                            act_rows = broker_api._broker_activity_rows(sym, raw_md, fetched_at)
+                            if act_rows:
+                                act_df = pd.DataFrame(act_rows)
+                                storage.upsert_broker_activity(act_df)
                 
-                # 3) Refresh dari DB
-                broker_df = storage.read_broker_flow([selected_ticker]).copy()
-                activity_df = storage.read_broker_activity([selected_ticker]).copy()
-                all_activity = activity_df
-                all_broker = broker_df
+                    # 3) Refresh dari DB
+                    broker_df = storage.read_broker_flow([selected_ticker]).copy()
+                    activity_df = storage.read_broker_activity([selected_ticker]).copy()
+                    all_activity = activity_df
+                    all_broker = broker_df
 
-            except Exception as exc:
-                st.caption(f"Live fetch failed for {selected_ticker}: {exc}")
+                except Exception as exc:
+                    st.caption(f"Live fetch failed for {selected_ticker}: {exc}")
     # ── end lazy fetch ──
-
-ticker_dates = sorted(all_activity[all_activity["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
 
     ticker_dates = sorted(all_activity[all_activity["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
     latest_broker_date = max(ticker_dates) if ticker_dates else None
     ticker_price_dates = sorted(all_prices[all_prices["ticker"] == selected_ticker]["date"].dt.date.unique().tolist())
     latest_price_date = max(ticker_price_dates) if ticker_price_dates else None
-    if not ticker_dates:
+        if not ticker_dates:
         st.warning(f'No data found for {selected_ticker}.')
         st.stop()
 
