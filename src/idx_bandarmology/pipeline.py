@@ -1,4 +1,4 @@
-<"""Pipeline orchestrator — scrape -> clean -> store, one call to run it all.
+"""Pipeline orchestrator — scrape -> clean -> store, one call to run it all.
 
 Enhanced for large universes:
   * Rate-limited broker fetching (safe for 900 tickers).
@@ -63,14 +63,17 @@ def _broker_flow_rows(watchlist_results: dict) -> pd.DataFrame:
 
 
 def _already_fetched_today(tickers: list[str], table: str = "broker_flow") -> list[str]:
-    """Return tickers that already have a row for today in the given table."""
+    """Return tickers that already have a row in the last 3 days (handles weekend/holiday)."""
     if not tickers:
         return []
-    today = datetime.now(timezone.utc).date().isoformat()
     from sqlalchemy import text
-    q = f"SELECT DISTINCT ticker FROM {table} WHERE date = :today AND ticker = ANY(:tickers)"
+    q = f"""
+        SELECT DISTINCT ticker FROM {table} 
+        WHERE date >= (CURRENT_DATE - INTERVAL '3 days') 
+        AND ticker = ANY(:tickers)
+    """
     with storage.engine.connect() as conn:
-        df = pd.read_sql(text(q), conn, params={"today": today, "tickers": [t.upper() for t in tickers]})
+        df = pd.read_sql(text(q), conn, params={"tickers": [t.upper() for t in tickers]})
     return df["ticker"].str.upper().tolist() if not df.empty else []
 
 
@@ -82,16 +85,6 @@ def run(
     resume: bool = True,
     broker_batch_size: int | None = None,
 ) -> dict[str, Any]:
-    
-    # ── SKIP WEEKEND ──
-    if date.today().weekday() >= 5:
-        print("[pipeline] Weekend detected — market closed, skipping broker fetch.")
-        return {
-            "tickers": [], "mode": "weekend",
-            "n_prices": 0, "n_broker": 0, "n_activity": 0,
-            "elapsed_seconds": 0, "notes": "skipped: weekend (market closed)",
-        }
-
     """Run the full pipeline once. Returns a summary dict with timing.
 
     Parameters
@@ -113,6 +106,20 @@ def run(
                     broker_skipped, broker_fetched, notes.
     """
     t0 = time.monotonic()
+
+    # ── SKIP WEEKEND ──
+    if date.today().weekday() >= 5:
+        print("[pipeline] Weekend detected — market closed, skipping broker fetch.")
+        return {
+            "tickers": [],
+            "mode": "weekend",
+            "n_prices": 0,
+            "n_broker": 0,
+            "n_activity": 0,
+            "elapsed_seconds": 0,
+            "notes": "skipped: weekend (market closed)",
+        }
+    # ── end skip weekend ──
 
     # Resolve universe
     if tickers:
@@ -147,7 +154,7 @@ def run(
         if resume:
             skipped = _already_fetched_today(syms)
             if skipped:
-                print(f"[pipeline] resume: skipping {len(skipped)} tickers already fetched today")
+                print(f"[pipeline] resume: skipping {len(skipped)} tickers already fetched recently")
                 target_syms = [s for s in syms if s not in skipped]
 
         if target_syms:
@@ -189,7 +196,7 @@ def run(
                 t6 = time.monotonic()
                 print(f"[pipeline]   -> {n_activity} broker_activity rows upserted in {t6-t5:.1f}s")
         else:
-            print("[pipeline] all tickers already fetched today (resume=True).")
+            print("[pipeline] all tickers already fetched recently (resume=True).")
     elif fetch_broker_data:
         print("[pipeline]   BROKER_API_TOKEN not set — skipping broker/bandar data")
 
@@ -276,4 +283,4 @@ def backfill_broker_history(
         "n_broker": n_broker,
         "n_activity": n_activity,
         "elapsed_seconds": round(elapsed, 1),
-    }
+     }
