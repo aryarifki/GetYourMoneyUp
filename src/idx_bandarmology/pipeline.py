@@ -27,7 +27,6 @@ from __future__ import annotations
 import time
 from datetime import date, datetime, timezone
 from typing import Any
-
 import pandas as pd
 
 from . import broker_api, config, prices, storage, universe
@@ -61,19 +60,28 @@ def _broker_flow_rows(watchlist_results: dict) -> pd.DataFrame:
         })
     return pd.DataFrame(rows)
 
-
 def _already_fetched_today(tickers: list[str], table: str = "broker_flow") -> list[str]:
-    """Return tickers that already have a row for today in the given table."""
     if not tickers:
         return []
     today = datetime.now(timezone.utc).date().isoformat()
     from sqlalchemy import text
-    q = f"SELECT DISTINCT ticker FROM {table} WHERE date = :today AND ticker = ANY(:tickers)"
+    # Cek juga data terakhir 3 hari ke belakang (handle weekend/holiday)
+    q = f"""
+        SELECT DISTINCT ticker FROM {table} 
+        WHERE date >= (CURRENT_DATE - INTERVAL '3 days') 
+        AND ticker = ANY(:tickers)
+    """
     with storage.engine.connect() as conn:
-        df = pd.read_sql(text(q), conn, params={"today": today, "tickers": [t.upper() for t in tickers]})
+        df = pd.read_sql(text(q), conn, params={"tickers": [t.upper() for t in tickers]})
     return df["ticker"].str.upper().tolist() if not df.empty else []
 
-
+if date.today().weekday() >= 5:  # 5 = Sabtu, 6 = Minggu
+    return {
+        "tickers": syms, "mode": mode_label,
+        "n_prices": 0, "n_broker": 0, "n_activity": 0,
+        "elapsed_seconds": 0, "notes": "skipped: weekend (market closed)",
+    }
+ 
 def run(
     tickers: list[str] | None = None,
     universe_mode: str | None = None,
