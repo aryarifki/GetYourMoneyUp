@@ -1,15 +1,13 @@
 # 📈 IDX Bandarmology — Smart Money Tracker (PostgreSQL Edition)
 
-> **Acknowledgment:** This repository is an enhanced, production-ready fork of the original [idx-bandarmology](https://github.com/IgnatiusHarry/idx-bandarmology) project by IgnatiusHarry.
-
 An end-to-end data pipeline and interactive dashboard for tracking "Smart Money" (broker accumulation and foreign flow) in the Indonesian Stock Exchange (IDX/BEI). 
 
 This project explores a fundamental trading hypothesis: **Do large-broker accumulation signals and foreign flow actually align with stronger IDX stock returns, or are they mostly trader folklore?**
 
 ---
 
-## ✨ What's New in this Version? (Fork Upgrades)
-This repository brings several architectural improvements over the original project to make it scalable and deployment-ready:
+## ✨ What's New in this Version?
+This repository is an upgraded, production-ready fork of the original IDX Bandarmology project. Key architectural improvements include:
 
 *   🐘 **PostgreSQL Migration (`storage.py`)**: Replaced the original SQLite database with a robust **PostgreSQL + SQLAlchemy** engine. It utilizes `psycopg2` `execute_values` for high-performance bulk upserts, making it scalable for the entire IDX universe (~900 tickers).
 *   🔍 **DB Inspector Dashboard (`db_inspector.py`)**: A standalone Streamlit application built to monitor database health, track row counts per table, and detect missing historical date gaps.
@@ -116,4 +114,4 @@ This project is built for educational purposes and data science research. **It i
 The behavioral buckets ("Smart Money", "Retail", etc.) are heuristic classifications based on historical broker patterns, not official identities. Any corporate-affiliation notes discovered using this tool are observational hypotheses and do not imply insider trading or wrongdoing. 
 
 ---
-*Original project by [IgnatiusHarry](https://github.com/IgnatiusHarry/idx-bandarmology) | Forked and upgraded by Cugarete*
+*Arya Rifky*
