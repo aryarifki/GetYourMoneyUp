@@ -1,242 +1,119 @@
-# 📈 IDX Bandarmology — Smart Money Tracker for Indonesian Stocks
+# 📈 IDX Bandarmology — Smart Money Tracker (PostgreSQL Edition)
 
-An end-to-end data pipeline for testing a simple question:
+> **Acknowledgment:** This repository is an enhanced, production-ready fork of the original [idx-bandarmology](https://github.com/IgnatiusHarry/idx-bandarmology) project by IgnatiusHarry.
 
-> **Do large-broker accumulation signals and foreign flow actually align with stronger IDX stock returns, or are they mostly trader folklore?**
+An end-to-end data pipeline and interactive dashboard for tracking "Smart Money" (broker accumulation and foreign flow) in the Indonesian Stock Exchange (IDX/BEI). 
 
-The project is built around a notebook-first workflow, with a separate Streamlit dashboard for interactive exploration and portfolio-ready screenshots.
+This project explores a fundamental trading hypothesis: **Do large-broker accumulation signals and foreign flow actually align with stronger IDX stock returns, or are they mostly trader folklore?**
 
 ---
 
-## What this project demonstrates
+## ✨ What's New in this Version? (Fork Upgrades)
+This repository brings several architectural improvements over the original project to make it scalable and deployment-ready:
 
-A single, end-to-end project that exercises the **full data lifecycle** — built to show practical **Data Engineering**, **Data Analysis**, and **Data Science** skills in one place.
+*   🐘 **PostgreSQL Migration (`storage.py`)**: Replaced the original SQLite database with a robust **PostgreSQL + SQLAlchemy** engine. It utilizes `psycopg2` `execute_values` for high-performance bulk upserts, making it scalable for the entire IDX universe (~900 tickers).
+*   🔍 **DB Inspector Dashboard (`db_inspector.py`)**: A standalone Streamlit application built to monitor database health, track row counts per table, and detect missing historical date gaps.
+*   ⚡ **Lazy Fetching (`app.py`)**: The main dashboard now features dynamic live-fetching. If you query a ticker that hasn't been updated in the database today, the dashboard will automatically hit the Broker API in the background and update the database on the fly.
+*   📅 **Smart Monthly Backfiller (`backfill_monthly.py`)**: A specialized script for historical data extraction with JSON-based progress tracking. It safely handles API rate limits and allows you to pause/resume backfilling across massive universes without data loss.
+*   🌐 **Public Deployment Ready (`cloudflared_config.yml`)**: Pre-configured for secure public internet exposure using Cloudflare Tunnels.
 
-| Role | What I built here |
-|------|-------------------|
-| 🛠️ **Data Engineer** | End-to-end **ETL pipeline** ingesting two live sources (yfinance OHLCV + an authenticated broker-flow API), cleaning and landing them into a **SQLite analytics warehouse**; **incremental multi-day backfill** that turns broker *snapshots* into a time series; a modular, reusable Python package (`config` · `broker_api` · `prices` · `storage` · `pipeline` · `features`) with secrets handled via `.env`. |
-| 📊 **Data Analyst** | A **6-tab interactive Streamlit dashboard** with KPI cards, filters and drill-downs; **visual storytelling** (price/signal context, broker-flow comparison, profile grouping, broker-to-broker distribution, event studies); business framing that turns anonymous broker codes into *"who is actually accumulating"*. |
-| 🔬 **Data Scientist** | **Feature engineering** (forward/backward returns, smart-money features); **statistical inference** (OLS with HAC/Newey–West robust errors, one-sided significance tests with multiple-testing awareness); **Granger causality** for lead/lag (statsmodels); **classification models** (logistic regression & random forest) scored with precision, recall & ROC-AUC; and an **event-study** framework. |
+## 🏗️ Architecture & Workflow
 
-**Tech stack:** Python · pandas · NumPy · statsmodels · scikit-learn · SQLite · Streamlit · matplotlib · yfinance · Jupyter
+**Data Engineering → Data Analysis → Data Science**
 
-## The story behind this project
+1.  **Ingestion**: Fetches daily OHLCV from `yfinance` and broker flow/distribution data from an authenticated private endpoint.
+2.  **Storage**: Cleans and lands data into a relational **PostgreSQL** data warehouse.
+3.  **Feature Engineering**: Calculates forward/backward returns, rolling volumes, and encodes categorical bandar signals.
+4.  **Modeling**: Runs OLS regression (with HAC/Newey-West robust errors) and Machine Learning classifiers (Logistic Regression & Random Forest) to test the predictive power of the signals.
+5.  **Visualization**: Serves insights through a highly interactive Streamlit dashboard.
 
-It started with a question every Indonesian retail investor eventually asks: **does "smart money" really exist on the IDX, or is *bandarmology* just folklore?**
+## 🛠️ Tech Stack
+*   **Data Processing**: Python, pandas, NumPy
+*   **Storage**: PostgreSQL, SQLAlchemy, psycopg2-binary
+*   **Machine Learning & Stats**: scikit-learn, statsmodels
+*   **Visualization**: Streamlit, Plotly, matplotlib, seaborn
+*   **Data Sources**: yfinance, Authenticated Broker API
 
-I went looking with **BULL** (PT Buana Lintas Lautan), a company transforming into **LNG shipping**. After taking delivery of its first LNG carrier — **MT Gas Garuda (145,914 CBM)** in December 2025 — BULL planned three more LNG vessels in H2 2026 (~US$125M capex) into a market projected to need **140–155 new LNG carriers by 2027**, with analysts expecting its net profit to roughly *triple* in 2026 and brokerages such as NH Korindo initiating a **BUY (target price 800)**.
-
-Fundamentally the story looked strong. Yet in early June the Indonesian market sold off hard and **BULL fell ~57%, from around 610 to 258** — which looked less like broken fundamentals and more like global sentiment and weak market conditions dragging the valuation down. So I asked:
-
-> **If the business story is still strong, would any broker quietly accumulate it at a cheaper price — and if so, who?**
-
-To answer that I built a pipeline to track flow broker-by-broker. One code kept showing up: **Broker II**, with **more than Rp 105 B cumulative net buy** over the window — a line that just kept climbing while retail-heavy brokers like **XL** sold or chopped around. That relentless, price-insensitive buying is the classic fingerprint of a **"bandar."**
-
-Broker code **II** maps to **PT Danatama Makmur Sekuritas** — and Danatama is not just any broker on this stock. It shares the **same address** as BULL (*Danatama Square II*); **Halim Jusuf** is President Commissioner of *both* Danatama and BULL; his son **Henry Jusuf** is BULL's President Director and a former Danatama director; and Danatama-linked entities collectively hold **~5.6% of BULL's shares**. (A broker code only shows the *executing* broker, not the final client — this is a data-driven research lead, **not** an accusation.)
-
-That curiosity became this end-to-end project, following one loop:
-
-> **raw data → SQLite warehouse → Streamlit dashboard → feature engineering → modeling → testable hypothesis**
-
-And the first real lesson it taught me: **the biggest broker is not always the most predictive one.** On BULL, II was the most *persistent* accumulator — but statistically a smaller broker (**GA**) carried the stronger forward-return signal. The same pipeline also surfaced signals in other stocks, including **BREN**. Both cases are below.
-
-> Not financial advice and not a buy/sell recommendation — a data project and research case study.
-
-## Architecture
-
-![Pipeline architecture — yfinance + broker data flow through the pipeline into a SQLite warehouse, then into the notebook / dashboard and the modeling layer](docs/screenshots/pipeline_flowchart.png)
-
-Each module is intentionally small and reusable on its own under `src/idx_bandarmology/`.
-
-## Repository structure
+## 📂 Repository Structure
 
 ```text
 idx-bandarmology/
 ├── .env.example
 ├── requirements.txt
-├── notebooks/
-│   └── 01_bandarmology_end_to_end.ipynb
+├── cloudflared_config.yml       # Cloudflare tunnel setup
+├── backfill_monthly.py          # Automated historical data fetcher
+├── db_inspector.py              # Streamlit DB monitoring app
+├── init_universe.py             # BEI master ticker initializer
 ├── dashboard/
-│   └── app.py
+│   └── app.py                   # Main Smart Money Dashboard
 ├── src/idx_bandarmology/
-│   ├── config.py
-│   ├── broker_api.py
-│   ├── prices.py
-│   ├── storage.py
-│   ├── pipeline.py
-│   ├── features.py
-│   ├── analysis.py
-│   └── modeling.py
-└── data/
-    ├── raw/
-    ├── processed/
-    └── db/bandarmology.sqlite
+│   ├── config.py              # Env & DB configurations
+│   ├── broker_api.py          # Rate-limited API client
+│   ├── prices.py              # yfinance integration
+│   ├── storage.py             # PostgreSQL SQLAlchemy models
+│   ├── pipeline.py            # ETL Orchestrator
+│   ├── universe.py            # Ticker categorization (IDX30, LQ45, etc.)
+│   ├── features.py            # Target & feature engineering
+│   ├── analysis.py            # Statistical & correlation analysis
+│   └── modeling.py            # ML & OLS hypothesis testing
+└── data/                      # Local JSON progress and CSV fallbacks
 ```
 
-## Setup
+## 🚀 Setup & Installation
 
+**1. Clone the repository and install dependencies:**
 ```bash
 git clone <your-repo-url>
 cd idx-bandarmology
 python -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 pip install -r requirements.txt
+```
 
+**2. Setup PostgreSQL Database:**
+Create a new PostgreSQL database (e.g., `bandarmology`).
+
+**3. Configure Environment Variables:**
+```bash
 cp .env.example .env
 ```
+Edit the `.env` file with your database credentials and API token:
+```env
+DATABASE_URL=postgresql://user:password@localhost:5432/bandarmology
+BROKER_API_TOKEN=your_authenticated_bearer_token_here
+UNIVERSE_MODE=idx80
+```
+*(Note: The `BROKER_API_TOKEN` requires an active session token from the broker data provider. Keep this token private.)*
 
-Then edit `.env` and set `BROKER_API_TOKEN`.
+## 💻 Usage Guide
 
-## About `BROKER_API_TOKEN`
-
-The broker/bandar data comes from a private, authenticated broker-data endpoint, so you need to supply your own session token from an account that already has access. Capture the bearer token your own logged-in session sends to that endpoint, then paste it into `.env`:
-
+### 1. Initialize the Universe
+Fetch the latest master list of active tickers directly from BEI:
 ```bash
-BROKER_API_TOKEN=your_token_here
+python init_universe.py
 ```
 
-Treat this token like a password: keep it private and never commit `.env` (it is already in `.gitignore`). Without the token, price data still loads, but broker and bandar data are skipped.
-
-## Main workflow: notebook
-
+### 2. Backfill Historical Data
+Populate your database with historical broker flow data. This script tracks progress in `data/backfill_progress.json` so you can safely pause and resume.
 ```bash
-jupyter notebook notebooks/01_bandarmology_end_to_end.ipynb
+python backfill_monthly.py --universe idx80 --months last6
 ```
 
-Run the notebook from top to bottom. It covers:
-
-1. Pipeline execution with yfinance and the broker-flow endpoint.
-2. Raw table inspection from SQLite.
-3. Feature engineering.
-4. Descriptive analysis and correlation checks.
-5. OLS regression and simple classification models.
-6. A plain-English verdict summary.
-
-Edit the watchlist in the notebook to track different stocks:
-
-```python
-WATCHLIST = ["BBCA", "BBRI", "BMRI", "BBNI", "TLKM", "ASII", "UNVR", "GOTO", "BREN", "ANTM"]
-```
-
-Important: the broker-flow endpoint provides a latest snapshot, not a historical archive. To build a usable time series, run the pipeline on multiple trading days.
-
-## Dashboard
-
+### 3. Run the Main Dashboard
+Launch the interactive Streamlit dashboard to analyze stocks, view broker distributions (Sankey diagrams), and run the cross-watchlist screener:
 ```bash
 streamlit run dashboard/app.py
 ```
 
-The dashboard reads the same SQLite warehouse as the notebook, so both views stay in sync. From the sidebar you choose a **universe**, a **focused ticker**, an **analysis date**, a **lookback window**, and the **validation horizon** / **minimum-event** thresholds — and can trigger a fresh pipeline run or a historical backfill in place. Headline metric cards (conviction score, signal, 5D return, foreign net flow, top buyer, smart-money cumulative flow) sit above six tabs:
+### 4. Run the DB Inspector
+Monitor your PostgreSQL database health, check for date gaps, and verify table sizes:
+```bash
+streamlit run db_inspector.py
+```
 
-- **Overview** — price / volume / signal context for the focused ticker, the day's top net buyers and sellers, multi-timeframe price performance, the smart-money daily flow, and the broker profile net flow.
-- **Broker Flow** — a broker drill-down with a multi-broker **cumulative flow comparison**, the **broker profile flow** grouping, and an estimated **broker-to-broker distribution** (sankey).
-- **Causality Insight** — Granger-causality tests for whether foreign flow (in aggregate, by participant type, and broker-by-broker) statistically *leads* price.
-- **Validation** — the broker-specific return validation table (events, mean/median forward return, win rate, net buy, significance) plus an accumulation event-study chart.
-- **Screener** — a cross-watchlist scan that ranks tickers and brokers by their validated accumulation signal, so the strongest leads surface automatically.
-- **Raw Tables** — the underlying window-level broker-flow and broker-activity rows.
+## ⚠️ Disclaimer
+This project is built for educational purposes and data science research. **It is not financial or investment advice.** 
+The behavioral buckets ("Smart Money", "Retail", etc.) are heuristic classifications based on historical broker patterns, not official identities. Any corporate-affiliation notes discovered using this tool are observational hypotheses and do not imply insider trading or wrongdoing. 
 
-## Broker behavioral profiles — smart money vs. retail
-
-Raw broker codes are anonymous, so before anything else the pipeline **groups every executing broker into a behavioral profile** and then nets their flow by group. This is what powers the *"who is really accumulating?"* read — separating conviction money from the crowd:
-
-| Profile | What it represents |
-|---------|--------------------|
-| 🟢 **Foreign Smart Money** | Directional foreign institutions with higher conviction |
-| 🔵 **Local Institutions** | Local funds and institution-like accounts |
-| 🟣 **Market Makers** | Active on both sides — the *net* position is what matters |
-| 🟠 **Speculative Operators** | Higher-risk, momentum / "gorengan"-style participants |
-| ⚪ **Retail-Dominant** | Retail-heavy platforms, often late or contrarian |
-
-In the dashboard, **"Smart Money" = Foreign Smart Money + Local Institutions**. The Overview tab's **Broker profile flow** panel shows net buy/sell for each group on the selected day, and the Broker-Flow tab's **Smart-money daily flow** chart sums only those two smart-money groups.
-
-> These are **heuristic behavioral buckets** inferred from broker-code patterns, not official classifications — they describe how a desk *tends* to trade, not the identity of any end client.
-
-## Results
-
-The case studies below follow the same path as the write-up that started this project: a deep dive on **BULL** (the origin story), then a shorter look at **BREN** (the strongest *statistical* signal). Every figure is a real export from the dashboard — point it at any other ticker and the same panels regenerate.
-
-### Main case study — BULL: "if the story is strong, who is buying the dip?"
-
-The dashboard's **Overview** for BULL frames the puzzle in one screen. The aggregate read is **Accumulation** with a **conviction score of 60.9/100** and a positive short-term move (**+4.35% over 5D, +28.86% over 10D**), yet **foreign net flow is negative** and smart-money cumulative flow is **−Rp 160.85 B** over the window. The banner says it plainly: *accumulation conflicts with foreign net selling — check whether the move is driven by local brokers.*
-
-![BULL Overview — conviction, signal, price/volume context, top brokers and profile net flow](docs/screenshots/bull_overview.jpg)
-
-So if foreign desks aren't behind it, **who is?** The **Broker Flow** tab answers by plotting each broker's *cumulative* net buying across the window. One line just keeps climbing: **Broker II**, to **> Rp 105 B** — adding relentlessly while a retail-heavy broker like **XL** drifts lower. That price-insensitive, one-directional accumulation is the classic fingerprint of a **"bandar."**
-
-![BULL broker-flow comparison — Broker II climbing to over Rp 105 B while retail brokers sell](docs/screenshots/bull_broker_flow_comparison.png)
-
-The full Broker Flow tab nets every code into behavioral profiles and reconstructs who traded against whom, so a single climbing line becomes a structured read of *which kind of money* is on each side:
-
-![BULL Broker Flow tab — profile grouping and broker-to-broker distribution](docs/screenshots/bull_broker_flow.jpg)
-
-#### Who is Broker II? Connecting the flow to the "bandar"
-
-Broker code **II** maps to **PT Danatama Makmur Sekuritas**, and the public record makes this more than a coincidence:
-
-- Danatama shares the **same address** as BULL — *Danatama Square II*.
-- **Halim Jusuf** is **President Commissioner of both** Danatama Makmur Sekuritas **and** BULL.
-- His son, **Henry Jusuf**, is BULL's **President Director** and a **former Danatama director**.
-- Danatama-linked entities collectively hold **~5.6% of BULL's shares**.
-
-> **The hypothesis this surfaces:** the most persistent "bandar" accumulating BULL is routing through a broker **affiliated with BULL's own controlling owners** — i.e. the patient smart money on this stock may be connected to the insiders themselves. A striking, *testable* lead that the pipeline produced automatically from raw broker codes.
-
-> ⚠️ **Observational hypothesis, not an allegation.** A broker code identifies the *executing member firm*, not the end client, so it cannot prove who actually traded — many unrelated clients can route orders through the same broker. There is **no public evidence** that any specific director or insider placed these trades. The value here is methodological: broker-flow data turned an anonymous code into a named, affiliated counterparty worth investigating with proper disclosures.
-
-#### Not all brokers are equal — volume ≠ skill
-
-Persistence is not the same as predictive power. Ranking every broker by *how its repeated net-buying of BULL was followed by forward returns* (≥5 events, positive mean, one-sided p < 0.05 to flag as significant) separates real edge from noise — and the most *persistent* broker is not the most *predictive* one:
-
-| Broker | Net-buy events | Win rate | Mean 10-day fwd return | p-value | Significant? |
-|--------|:---:|:---:|:---:|:---:|:---:|
-| **GA** | 11 | **73%** | **+15.48%** | **0.0053** | ✅ yes |
-| II | 38 | 50% | +3.77% | 0.0642 | ❌ no |
-| ZP | 37 | 46% | — | 0.1171 | ❌ no |
-| SQ | 35 | 49% | — | 0.0822 | ❌ no |
-
-> Lower-volume broker **GA** carried a genuine, statistically significant edge (p = 0.0053 ≈ 99.5% confidence), while the three biggest-volume brokers on the stock (II, ZP, SQ) had roughly coin-flip win rates. Across the whole watchlist, **17 broker–ticker combinations** passed the significance filter. BULL stays interesting to monitor — especially with a rights-issue story ahead.
-
-### Other signals — BREN's statistically strongest broker
-
-The same pipeline, pointed at **BREN** (Barito Renewables), produced the cleanest *statistical* result in the warehouse. Among every broker that repeatedly net-bought BREN, foreign broker **BK** stands out: **13 net-buy events, a +21.59% average 10-day forward return, a 69% win rate, and p = 0.0122** (significant at the 5% level).
-
-![BREN Overview — price, signal, top brokers and smart-money flow](docs/screenshots/bren_overview.png)
-
-The broker grouping tells the rest: over this window **Local Institutions** were the dominant net buyers (**+Rp 871 B**), with retail-heavy platforms adding **+Rp 245 B**, while **Market Makers (−Rp 417 B)** and **Foreign Smart Money (−Rp 564 B)** were net sellers — a reminder that an "Accumulation" tape can still have large foreign desks distributing underneath it.
-
-![BREN broker profile flow and distribution](docs/screenshots/bren_broker_profiles.png)
-
-> Scope & reproducibility: these are snapshots produced by `notebooks/01_bandarmology_end_to_end.ipynb` and `dashboard/app.py` against the same SQLite warehouse (window ending 2026-06-22). A short history, a small watchlist, and multiple-testing risk make these findings **exploratory, not production trading signals** — re-running on a longer history will shift the exact numbers. See the Disclaimer at the bottom.
-
-### Under the hood: causality & broker-level validation
-
-Two analytical layers sit behind the case studies above, surfaced in the dashboard's **Causality Insight** and **Validation** tabs:
-
-- **Granger causality** (`statsmodels`): for the focused ticker it tests whether foreign net flow — in aggregate, by participant type, and broker-by-broker — *precedes and predicts* price over the next few days, rather than merely moving with it on the same day (p < 0.05 flags a significant lead).
-- **Broker-specific return validation** (`broker_alpha_scan`): for every broker that repeatedly net-bought the ticker it reports event count, mean/median forward return, win rate, and a one-sided significance test, applying the same "≥5 events, positive mean, p < 0.05" bar — driven by a configurable horizon and minimum-event threshold.
-
-Both layers run **per focused ticker** — the BULL and BREN cases above are produced by changing the **Ticker** selector and nothing else.
-
-## Methodology
-
-- **Historical returns**: `back_return_5d` measures how much the stock moved over the last 5 trading days up to the signal date.
-- **Forward returns**: `fwd_return_5d` measures how much the stock moves over the next 5 trading days after the signal date.
-- **Smart money features**: bandar detector score, foreign broker net, foreign flow, and volume-based context.
-- **OLS regression**: checks whether signal variables have statistically significant relationships with returns.
-- **Classification models**: turn returns into a binary up/down target and report accuracy, precision, recall, and ROC-AUC.
-- **Granger causality**: tests whether lagged foreign flow improves the prediction of price beyond price's own history — a directional ("leads") check rather than a same-day correlation.
-- **Broker-specific validation**: ranks individual brokers by the statistical significance of the forward returns that follow their repeated net buying, flagging only accumulators that clear the one-sided test.
-
-With a short history and a small watchlist, results are exploratory rather than production-grade trading signals.
-
-## Roadmap
-
-- [ ] Add automatic scheduling for daily pipeline runs.
-- [ ] Add broader market universes such as IDX30 or LQ45.
-- [ ] Add a walk-forward backtest for simple signal rules.
-- [ ] Add a more production-oriented BI layer if needed.
-
-## Disclaimer
-
-This project is for education and personal research. It is not investment advice. Access to the private broker-flow endpoint requires your own account token and should be used in line with the provider's terms of service.
-
-The corporate-affiliation note in **Results** ("governance breadcrumb") is based on publicly reported information about board composition and shareholder registers, and is presented strictly as an observational research hypothesis. Broker codes identify the executing member firm, not the underlying client; nothing here asserts, or should be read to imply, that any named company or individual engaged in insider trading or any other wrongdoing.
+---
+*Original project by [IgnatiusHarry](https://github.com/IgnatiusHarry/idx-bandarmology) | Forked and upgraded by Cugarete*
