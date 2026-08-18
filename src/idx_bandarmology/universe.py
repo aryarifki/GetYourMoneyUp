@@ -131,49 +131,54 @@ _EXTENDED_LIQUID = sorted(set(_IDX80 + _LQ45 + _IDX30 + config.WATCHLIST + [
 ]))
 
 
-def _fetch_bei_stock_summary(limit: int = 1200, retries: int = 3) -> list[dict[str, Any]]:
-    """Fetch complete stock list from BEI TradingSummary endpoint."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
-        "Accept-Encoding": "gzip, deflate, br",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": "https://www.idx.co.id/id/data-pasar/data-saham/daftar-saham",
-        "Connection": "keep-alive",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
-    }
-    with requests.Session() as session:
-        for attempt in range(retries):
-            try:
-                resp = session.get(
-                    _BEI_STOCK_SUMMARY,
-                    params={"start": 0, "length": limit},
-                    headers=headers,
-                    timeout=30,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                rows = data.get("data", []) or data.get("Data", []) or []
-                out = []
-                for row in rows:
-                    code = row.get("StockCode") or row.get("code") or row.get("KodeEmiten")
-                    name = row.get("StockName") or row.get("name") or row.get("NamaEmiten")
-                    if code:
-                        out.append({
-                            "ticker": code.upper().strip(),
-                            "name": (name or "").strip(),
-                            "board": (row.get("ListingBoard") or row.get("board") or "").strip(),
-                            "sector": (row.get("Sector") or row.get("sector") or "").strip(),
-                        })
-                if out:
-                    return out
-            except Exception as exc:
-                print(f"[universe] BEI fetch attempt {attempt + 1}/{retries} failed: {exc}")
-                if attempt < retries - 1:
-                    time.sleep(2 ** attempt)
+def _fetch_bei_stock_summary(limit: int = 9999, retries: int = 3) -> list[dict[str, Any]]:
+    """
+    Fetch daftar saham aktif dari BEI menggunakan metode session cookie.
+    Mengemulasi logika getCompanyProfiles dari IDX-API untuk mencegah pemblokiran.
+    """
+    session = requests.Session()
+    session.headers.update({
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
+        'Referer': 'https://www.idx.co.id/',
+        'X-Requested-With': 'XMLHttpRequest',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
+    })
+
+    for attempt in range(retries):
+        try:
+            # 1. ensureSession: By-pass proteksi IDX
+            session.get("https://www.idx.co.id/id", timeout=15.0)
+            session.get("https://www.idx.co.id/primary/home/GetIndexList", timeout=15.0)
+            
+            # 2. Tarik daftar emiten
+            url = f"https://www.idx.co.id/primary/ListedCompany/GetCompanyProfiles?start=0&length={limit}"
+            resp = session.get(url, timeout=30.0)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            rows = data.get("data", [])
+            out = []
+            
+            # Mapping JSON berdasarkan struktur getCompanyProfiles
+            for row in rows:
+                code = row.get("KodeEmiten")
+                name = row.get("NamaEmiten")
+                if code:
+                    out.append({
+                        "ticker": code.upper().strip(),
+                        "name": (name or "").strip(),
+                        "board": "",  # Endpoint ini tidak menyediakan data papan, dibiarkan kosong
+                        "sector": "", # Endpoint ini tidak menyediakan data sektor, dibiarkan kosong
+                    })
+            if out:
+                return out
+                
+        except Exception as exc:
+            print(f"[universe] BEI fetch attempt {attempt + 1}/{retries} failed: {exc}")
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+                
     return []
 
 
@@ -307,7 +312,7 @@ def refresh_master_tickers(force: bool = False) -> int:
                 return int(count)
 
     # Try BEI first
-    rows = _fetch_bei_stock_summary(limit=1200)
+    rows = _fetch_bei_stock_summary(limit=9999)
 
     # Fallback to CSV if BEI fails
     if not rows:
