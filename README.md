@@ -19,7 +19,7 @@ This repository is an upgraded, production-ready fork of the original IDX Bandar
 
 **Data Engineering → Data Analysis → Data Science**
 
-1.  **Ingestion**: Fetches daily OHLCV from `yfinance` and broker flow/distribution data from an authenticated private endpoint.
+1.  **Ingestion**: Fetches daily OHLCV from `IDX API` and broker flow/distribution data from an authenticated private endpoint.
 2.  **Storage**: Cleans and lands data into a relational **PostgreSQL** data warehouse.
 3.  **Feature Engineering**: Calculates forward/backward returns, rolling volumes, and encodes categorical bandar signals.
 4.  **Modeling**: Runs OLS regression (with HAC/Newey-West robust errors) and Machine Learning classifiers (Logistic Regression & Random Forest) to test the predictive power of the signals.
@@ -30,7 +30,7 @@ This repository is an upgraded, production-ready fork of the original IDX Bandar
 *   **Storage**: PostgreSQL, SQLAlchemy, psycopg2-binary
 *   **Machine Learning & Stats**: scikit-learn, statsmodels
 *   **Visualization**: Streamlit, Plotly, matplotlib, seaborn
-*   **Data Sources**: yfinance, Authenticated Broker API
+*   **Data Sources**: IDX API, Authenticated Broker API
 
 ## 📂 Repository Structure
 
