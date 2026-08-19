@@ -261,11 +261,12 @@ def backfill_broker_history(
 
     t2 = time.monotonic()
     print(f"[pipeline] backfilling broker/bandar history...")
-    broker_df, activity_df = broker_api.fetch_historical_broker_data(syms, start_date, end_date)
-    n_broker = storage.upsert_broker_flow(broker_df)
-    n_activity = storage.upsert_broker_activity(activity_df)
+    
+    # UPDATED: Penarikan API dan penyimpanan DB sekarang ditangani sekaligus secara bertahap
+    n_broker, n_activity = broker_api.fetch_historical_broker_data(syms, start_date, end_date)
+    
     t3 = time.monotonic()
-    print(f"[pipeline]   -> {n_broker} broker_flow rows, {n_activity} activity rows in {t3-t2:.1f}s")
+    print(f"[pipeline]   -> {n_broker} broker_flow rows, {n_activity} activity rows safely saved to DB in {t3-t2:.1f}s")
 
     elapsed = time.monotonic() - t0
     storage.log_run(
