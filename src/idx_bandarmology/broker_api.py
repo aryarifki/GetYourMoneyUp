@@ -519,11 +519,12 @@ def fetch_historical_broker_data(
     tickers: list[str],
     start_date: str | date | datetime,
     end_date: str | date | datetime,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[int, int]:
     """Backfill daily flow rows and per-broker distribution rows.
 
     Rate-limited: safe for large universes (hundreds of tickers).
-    Includes Granular Incremental Skip to resume safely.
+    Includes Granular Incremental Skip to resume safely and 
+    Micro-batching DB Commits to save progress per 1000 tasks.
     """
     from concurrent.futures import ThreadPoolExecutor
     from . import storage
@@ -557,7 +558,6 @@ def fetch_historical_broker_data(
         done_set = set()
         if not df_exist.empty:
             df_exist['date_str'] = pd.to_datetime(df_exist['date']).dt.strftime('%Y-%m-%d')
-            # Gabungkan ticker dan tanggal menjadi tuple lalu simpan ke set untuk pengecekan secepat kilat O(1)
             done_set = set(zip(df_exist['ticker'], df_exist['date_str']))
     except Exception as e:
         print(f"[broker_api] Could not check DB for skip logic: {e}")
@@ -577,17 +577,7 @@ def fetch_historical_broker_data(
         
     if total_tasks == 0:
         print("[broker_api] All tasks for this date range are already in the database. Moving on!")
-        return pd.DataFrame(columns=[
-            "date", "ticker", "bandar_signal", "bandar_signal_score",
-            "foreign_net_broker", "local_net_broker", "gov_net_broker",
-            "foreign_net_flow", "domestic_net_flow", "total_value",
-            "foreign_signal", "conclusion_broker", "conclusion_flow", "fetched_at"
-        ]), pd.DataFrame(columns=[
-            "date", "ticker", "broker_code", "participant_type",
-            "buy_value", "sell_value", "net_value",
-            "buy_lot", "sell_lot", "frequency",
-            "buy_avg_price", "sell_avg_price", "fetched_at"
-        ])
+        return 0, 0
 
     completed = 0
     last_log = time.time()
@@ -611,18 +601,8 @@ def fetch_historical_broker_data(
         return flow, activity
 
     max_workers = 1 if len(syms) > 20 else min(4, max(1, len(tasks)))
-    print(f"[broker_api] Fetching remaining {total_tasks} tasks (workers={max_workers})")
+    print(f"[broker_api] Fetching remaining {total_tasks} tasks in BATCHES of 1000 (workers={max_workers})")
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        results = list(pool.map(fetch_one, tasks))
-
-    flow_rows = [flow for flow, _activity in results if flow is not None]
-    activity_rows = [row for _flow, activity in results for row in activity]
-    if errors and not flow_rows:
-        print("[broker_api] historical broker fetch returned no rows. Sample errors:")
-        for err in errors:
-            print(f"[broker_api]   {err}")
-            
     flow_cols = [
         "date", "ticker", "bandar_signal", "bandar_signal_score",
         "foreign_net_broker", "local_net_broker", "gov_net_broker",
@@ -635,7 +615,40 @@ def fetch_historical_broker_data(
         "buy_lot", "sell_lot", "frequency",
         "buy_avg_price", "sell_avg_price", "fetched_at",
     ]
-    return pd.DataFrame(flow_rows, columns=flow_cols), pd.DataFrame(activity_rows, columns=activity_cols)
+
+    total_flow_upserted = 0
+    total_activity_upserted = 0
+    BATCH_SIZE = 1000
+
+    # ── MICRO-BATCHING LOGIC ──
+    for i in range(0, total_tasks, BATCH_SIZE):
+        batch_tasks = tasks[i : i + BATCH_SIZE]
+        print(f"[broker_api] 🔄 Starting batch {i//BATCH_SIZE + 1}/{(total_tasks-1)//BATCH_SIZE + 1} ({len(batch_tasks)} tasks)...")
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            results = list(pool.map(fetch_one, batch_tasks))
+            
+        flow_rows = [flow for flow, _activity in results if flow is not None]
+        activity_rows = [row for _flow, activity in results for row in activity]
+        
+        flow_df = pd.DataFrame(flow_rows, columns=flow_cols)
+        activity_df = pd.DataFrame(activity_rows, columns=activity_cols)
+        
+        # LANGSUNG SIMPAN KE DATABASE PER BATCH!
+        if not flow_df.empty:
+            total_flow_upserted += storage.upsert_broker_flow(flow_df)
+        if not activity_df.empty:
+            total_activity_upserted += storage.upsert_broker_activity(activity_df)
+            
+        print(f"[broker_api] ✅ Batch saved to DB! Cumulative flow rows saved: {total_flow_upserted}")
+
+    if errors and total_flow_upserted == 0:
+        print("[broker_api] historical broker fetch returned no rows. Sample errors:")
+        for err in errors:
+            print(f"[broker_api]   {err}")
+            
+    return total_flow_upserted, total_activity_upserted
+
 
 # ── section: price performance (quick cross-check; daily OHLC comes from yfinance) ──
 
