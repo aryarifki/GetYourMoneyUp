@@ -523,8 +523,11 @@ def fetch_historical_broker_data(
     """Backfill daily flow rows and per-broker distribution rows.
 
     Rate-limited: safe for large universes (hundreds of tickers).
+    Includes Granular Incremental Skip to resume safely.
     """
     from concurrent.futures import ThreadPoolExecutor
+    from . import storage
+    from sqlalchemy import text
 
     start = _parse_date(start_date)
     end = _parse_date(end_date)
@@ -540,8 +543,52 @@ def fetch_historical_broker_data(
             dates.append(current.isoformat())
         current += timedelta(days=1)
 
+    # ── GRANULAR INCREMENTAL SKIP LOGIC ──
+    print("[broker_api] Checking database for existing data to skip...")
+    q = text("""
+        SELECT ticker, date 
+        FROM broker_flow 
+        WHERE date >= :s AND date <= :e AND ticker = ANY(:t)
+    """)
+    try:
+        with storage.engine.connect() as conn:
+            df_exist = pd.read_sql(q, conn, params={"s": start.isoformat(), "e": end.isoformat(), "t": syms})
+        
+        done_set = set()
+        if not df_exist.empty:
+            df_exist['date_str'] = pd.to_datetime(df_exist['date']).dt.strftime('%Y-%m-%d')
+            # Gabungkan ticker dan tanggal menjadi tuple lalu simpan ke set untuk pengecekan secepat kilat O(1)
+            done_set = set(zip(df_exist['ticker'], df_exist['date_str']))
+    except Exception as e:
+        print(f"[broker_api] Could not check DB for skip logic: {e}")
+        done_set = set()
+    # ── END SKIP LOGIC ──
+
     errors: list[str] = []
-    total_tasks = len(dates) * len(syms)
+    
+    # FILTER: Hanya buat task untuk (ticker, tanggal) yang BELUM ada di database
+    tasks = [(sym, iso) for iso in dates for sym in syms if (sym, iso) not in done_set]
+    
+    total_tasks = len(tasks)
+    skipped_tasks = (len(dates) * len(syms)) - total_tasks
+    
+    if skipped_tasks > 0:
+        print(f"[broker_api] ⏭️ Skipped {skipped_tasks} tasks (already safely in database).")
+        
+    if total_tasks == 0:
+        print("[broker_api] All tasks for this date range are already in the database. Moving on!")
+        return pd.DataFrame(columns=[
+            "date", "ticker", "bandar_signal", "bandar_signal_score",
+            "foreign_net_broker", "local_net_broker", "gov_net_broker",
+            "foreign_net_flow", "domestic_net_flow", "total_value",
+            "foreign_signal", "conclusion_broker", "conclusion_flow", "fetched_at"
+        ]), pd.DataFrame(columns=[
+            "date", "ticker", "broker_code", "participant_type",
+            "buy_value", "sell_value", "net_value",
+            "buy_lot", "sell_lot", "frequency",
+            "buy_avg_price", "sell_avg_price", "fetched_at"
+        ])
+
     completed = 0
     last_log = time.time()
 
@@ -563,9 +610,8 @@ def fetch_historical_broker_data(
             last_log = time.time()
         return flow, activity
 
-    tasks = [(sym, iso) for iso in dates for sym in syms]
     max_workers = 1 if len(syms) > 20 else min(4, max(1, len(tasks)))
-    print(f"[broker_api] Fetching {len(syms)} tickers x {len(dates)} dates = {total_tasks} tasks (workers={max_workers})")
+    print(f"[broker_api] Fetching remaining {total_tasks} tasks (workers={max_workers})")
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         results = list(pool.map(fetch_one, tasks))
@@ -576,6 +622,7 @@ def fetch_historical_broker_data(
         print("[broker_api] historical broker fetch returned no rows. Sample errors:")
         for err in errors:
             print(f"[broker_api]   {err}")
+            
     flow_cols = [
         "date", "ticker", "bandar_signal", "bandar_signal_score",
         "foreign_net_broker", "local_net_broker", "gov_net_broker",
@@ -589,7 +636,6 @@ def fetch_historical_broker_data(
         "buy_avg_price", "sell_avg_price", "fetched_at",
     ]
     return pd.DataFrame(flow_rows, columns=flow_cols), pd.DataFrame(activity_rows, columns=activity_cols)
-
 
 # ── section: price performance (quick cross-check; daily OHLC comes from yfinance) ──
 
