@@ -15,7 +15,6 @@ def _get_idx_session() -> requests.Session:
     """Mengadopsi logika ensureSession() dari BaseClient idx-api untuk menembus WAF."""
     session = requests.Session()
     
-    # 1. Meniru persis browserHeaders dari repositori idx-api
     session.headers.update({
         'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
@@ -25,18 +24,9 @@ def _get_idx_session() -> requests.Session:
     })
     
     try:
-        # Pancing cookie dari halaman beranda
         session.get("https://www.idx.co.id/id", timeout=15.0)
-        
-        # 2. Trik idx-api: Beri jeda persis 1000ms (1 detik) sebelum validasi agar tidak dianggap bot
         time.sleep(1.0)
-        
-        # 3. Inject X-Requested-With untuk panggilan API selanjutnya
-        session.headers.update({
-            'X-Requested-With': 'XMLHttpRequest'
-        })
-        
-        # Validasi sesi ke GetIndexList
+        session.headers.update({'X-Requested-With': 'XMLHttpRequest'})
         session.get("https://www.idx.co.id/primary/home/GetIndexList", timeout=15.0)
     except Exception as e:
         print(f"[prices] Gagal menginisialisasi sesi IDX: {e}")
@@ -62,7 +52,6 @@ def fetch_history(ticker: str, period: str = "1y", interval: str = "1d") -> tupl
     url = f"https://www.idx.co.id/primary/ListedCompany/GetTradingInfoSS?code={sym}&start=0&length=1000"
     
     last_status = 200
-    # 4. Mengadopsi maxAttempts = 5 dari fetcherUrl idx-api
     max_retries = 5 
     
     for attempt in range(max_retries):
@@ -70,7 +59,6 @@ def fetch_history(ticker: str, period: str = "1y", interval: str = "1d") -> tupl
             resp = session.get(url, timeout=15.0)
             last_status = resp.status_code
             
-            # Jika terkena blokir atau server error
             if not resp.ok:
                 raise requests.exceptions.HTTPError(f"Server returned {last_status}")
                 
@@ -101,13 +89,10 @@ def fetch_history(ticker: str, period: str = "1y", interval: str = "1d") -> tupl
                 print(f"[prices] API IDX gagal mutlak untuk {sym} setelah {max_retries} kali percobaan.")
                 break
             
-            # 5. Mengadopsi logika delay exponential backoff dari idx-api
             delay_sec = min(1.0 * (2 ** attempt), 15.0)
             print(f"[prices] {sym} tertahan (Status {last_status}). Retrying in {delay_sec}s (Attempt {attempt+1}/{max_retries})...")
-            
             time.sleep(delay_sec)
             
-            # Refresh sesi jika diduga cookie hangus (403 Forbidden)
             if last_status == 403:
                 session = _get_idx_session()
                 _SESSION = session
@@ -115,16 +100,52 @@ def fetch_history(ticker: str, period: str = "1y", interval: str = "1d") -> tupl
     return pd.DataFrame(columns=cols), last_status
 
 
-def fetch_history_many(tickers: list[str], period: str = "1y", interval: str = "1d") -> pd.DataFrame:
-    """Daily OHLCV for several tickers, concatenated into one tidy table."""
-    frames = []
-    total = len(tickers)
-    consecutive_403 = 0
+def fetch_history_many(tickers: list[str], period: str = "1y", interval: str = "1d") -> int:
+    """Daily OHLCV for several tickers, micro-batched and committed to DB.
     
-    for i, t in enumerate(tickers):
+    Returns the total number of rows upserted.
+    """
+    from . import storage
+    from sqlalchemy import text
+    
+    # ── INCREMENTAL SKIP LOGIC ──
+    print("[prices] Menganalisis database untuk melewati saham yang sudah ditarik harganya...")
+    try:
+        # Jika sebuah saham memiliki > 10 baris data harga, asumsikan sudah pernah ditarik.
+        q = text("""
+            SELECT ticker 
+            FROM prices 
+            WHERE ticker = ANY(:t)
+            GROUP BY ticker
+            HAVING COUNT(*) > 10
+        """)
+        with storage.engine.connect() as conn:
+            df_exist = pd.read_sql(q, conn, params={"t": tickers})
+        done_set = set(df_exist['ticker'])
+    except Exception as e:
+        print(f"[prices] Gagal mengecek database: {e}")
+        done_set = set()
+        
+    target_tickers = [t for t in tickers if t not in done_set]
+    total = len(target_tickers)
+    skipped_count = len(tickers) - total
+    
+    if skipped_count > 0:
+        print(f"[prices] ⏭️ Skipped {skipped_count} tickers (sudah ada di database).")
+        
+    if total == 0:
+        print("[prices] Semua harga saham sudah lengkap di database.")
+        return 0
+        
+    frames = []
+    consecutive_403 = 0
+    total_upserted = 0
+    BATCH_SIZE = 300
+    
+    for i, t in enumerate(target_tickers):
         if consecutive_403 >= 3:
             print("\n[prices] 🚨 SIRKUIT BREAKER AKTIF: IP Anda diblokir permanen oleh Firewall IDX (Status 403).")
-            print("[prices] ⏭️ Menghentikan penarikan harga saham agar proses backfill broker Stockbit tetap bisa berjalan...\n")
+            print("[prices] ⏭️ Menghentikan penarikan harga saham...\n")
             break
             
         df, status = fetch_history(t, period=period, interval=interval)
@@ -137,13 +158,21 @@ def fetch_history_many(tickers: list[str], period: str = "1y", interval: str = "
         if not df.empty:
             frames.append(df)
             
-        # Logika jeda agar tidak terdeteksi DDOS
-        if i < total - 1 and status != 403:
+        is_last_item = (i == total - 1)
+        
+        # ── MICRO-BATCHING DB COMMIT ──
+        if len(frames) > 0 and ((i + 1) % BATCH_SIZE == 0 or is_last_item):
+            batch_df = pd.concat(frames, ignore_index=True)
+            saved = storage.upsert_prices(batch_df)
+            total_upserted += saved
+            print(f"[prices] 🔄 Batch saved! {len(frames)} tickers committed. Cumulative price rows saved: {total_upserted}")
+            frames = [] # Kosongkan memori untuk batch berikutnya
+            
+        # ── LOGIKA JEDA (ANTI-BLOCK/STEALTH MODE) ──
+        if not is_last_item and status != 403:
             time.sleep(random.uniform(0.3, 1.2))
             if (i + 1) % 50 == 0:
-                print(f"[prices] Progress Harga IDX: {i+1}/{total} saham ditarik. Beristirahat sejenak...")
+                print(f"[prices] Progress Harga IDX: {i+1}/{total} saham diproses. Beristirahat sejenak...")
                 time.sleep(random.uniform(3.0, 6.0))
                 
-    if not frames:
-        return pd.DataFrame(columns=["date", "ticker", "open", "high", "low", "close", "volume"])
-    return pd.concat(frames, ignore_index=True)
+    return total_upserted
