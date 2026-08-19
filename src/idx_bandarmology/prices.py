@@ -12,38 +12,37 @@ import pandas as pd
 import requests
 
 def _get_idx_session() -> requests.Session:
-    """Mengemulasi fungsi ensureSession() dari IDX-API BaseClient untuk menembus proteksi BEI."""
+    """Mengadopsi logika ensureSession() dari BaseClient idx-api untuk menembus WAF."""
     session = requests.Session()
-    # Header siluman tingkat tinggi (Spoofing Google Chrome Modern di Windows)
+    
+    # 1. Meniru persis browserHeaders dari repositori idx-api
     session.headers.update({
         'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-        'Connection': 'keep-alive',
-        'Host': 'www.idx.co.id',
-        'Origin': 'https://www.idx.co.id',
+        'Accept-Language': 'en-US,en;q=0.9,id;q=0.8',
         'Referer': 'https://www.idx.co.id/',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'X-Requested-With': 'XMLHttpRequest',
-        'sec-ch-ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-        'sec-ch-ua-mobile': '?0',
-        'sec-ch-ua-platform': '"Windows"'
+        'Upgrade-Insecure-Requests': '1',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36'
     })
     
     try:
-        # Memancing cookie dengan mengunjungi halaman beranda layaknya manusia
+        # Pancing cookie dari halaman beranda
         session.get("https://www.idx.co.id/id", timeout=15.0)
-        time.sleep(0.5)
-        # Validasi session
+        
+        # 2. Trik idx-api: Beri jeda persis 1000ms (1 detik) sebelum validasi agar tidak dianggap bot
+        time.sleep(1.0)
+        
+        # 3. Inject X-Requested-With untuk panggilan API selanjutnya
+        session.headers.update({
+            'X-Requested-With': 'XMLHttpRequest'
+        })
+        
+        # Validasi sesi ke GetIndexList
         session.get("https://www.idx.co.id/primary/home/GetIndexList", timeout=15.0)
     except Exception as e:
-        pass # Abaikan jika gagal memancing, lanjut gunakan header yang ada
+        print(f"[prices] Gagal menginisialisasi sesi IDX: {e}")
         
     return session
 
-# Simpan sesi secara global agar tidak membuat koneksi baru setiap ganti ticker
 _SESSION = None
 
 def _ensure_session() -> requests.Session:
@@ -63,25 +62,21 @@ def fetch_history(ticker: str, period: str = "1y", interval: str = "1d") -> tupl
     url = f"https://www.idx.co.id/primary/ListedCompany/GetTradingInfoSS?code={sym}&start=0&length=1000"
     
     last_status = 200
-    max_retries = 3
+    # 4. Mengadopsi maxAttempts = 5 dari fetcherUrl idx-api
+    max_retries = 5 
     
     for attempt in range(max_retries):
         try:
             resp = session.get(url, timeout=15.0)
             last_status = resp.status_code
             
-            # Jika terkena blokir WAF (403) atau Rate Limit (429)
-            if last_status in (403, 429):
-                print(f"[prices] {sym} tertahan (Status {last_status}), memulihkan sesi... (percobaan {attempt+1})")
-                time.sleep(random.uniform(2.0, 5.0))
-                session = _get_idx_session()
-                _SESSION = session
-                continue
+            # Jika terkena blokir atau server error
+            if not resp.ok:
+                raise requests.exceptions.HTTPError(f"Server returned {last_status}")
                 
-            resp.raise_for_status()
             data = resp.json()
-            
             rows = []
+            
             for item in data.get("replies", []) or []:
                 rows.append({
                     "date": pd.to_datetime(item.get("Date")).date(),
@@ -97,19 +92,26 @@ def fetch_history(ticker: str, period: str = "1y", interval: str = "1d") -> tupl
                 df = pd.DataFrame(rows)[cols]
                 return df.sort_values("date").reset_index(drop=True), 200
                 
-            # Jika data sukses ditarik tapi memang kosong
             return pd.DataFrame(columns=cols), 200
             
-        except requests.exceptions.RequestException as exc:
-            print(f"[prices] API IDX gagal untuk {sym} (percobaan {attempt+1}/{max_retries}): {type(exc).__name__}")
-            last_status = 500
-            if attempt < max_retries - 1:
-                time.sleep(random.uniform(1.0, 3.0))
-        except Exception as e:
-            print(f"[prices] Error memproses data untuk {sym}: {e}")
-            last_status = 500
-            break
+        except Exception as exc:
+            last_status = 403 if "403" in str(exc) else (429 if "429" in str(exc) else 500)
             
+            if attempt >= max_retries - 1:
+                print(f"[prices] API IDX gagal mutlak untuk {sym} setelah {max_retries} kali percobaan.")
+                break
+            
+            # 5. Mengadopsi logika delay exponential backoff dari idx-api
+            delay_sec = min(1.0 * (2 ** attempt), 15.0)
+            print(f"[prices] {sym} tertahan (Status {last_status}). Retrying in {delay_sec}s (Attempt {attempt+1}/{max_retries})...")
+            
+            time.sleep(delay_sec)
+            
+            # Refresh sesi jika diduga cookie hangus (403 Forbidden)
+            if last_status == 403:
+                session = _get_idx_session()
+                _SESSION = session
+                
     return pd.DataFrame(columns=cols), last_status
 
 
@@ -120,7 +122,6 @@ def fetch_history_many(tickers: list[str], period: str = "1y", interval: str = "
     consecutive_403 = 0
     
     for i, t in enumerate(tickers):
-        # ── SIRKUIT BREAKER ──
         if consecutive_403 >= 3:
             print("\n[prices] 🚨 SIRKUIT BREAKER AKTIF: IP Anda diblokir permanen oleh Firewall IDX (Status 403).")
             print("[prices] ⏭️ Menghentikan penarikan harga saham agar proses backfill broker Stockbit tetap bisa berjalan...\n")
@@ -131,12 +132,12 @@ def fetch_history_many(tickers: list[str], period: str = "1y", interval: str = "
         if status == 403:
             consecutive_403 += 1
         else:
-            consecutive_403 = 0 # Reset jika berhasil
+            consecutive_403 = 0
             
         if not df.empty:
             frames.append(df)
             
-        # ── LOGIKA JEDA (ANTI-BLOCK/STEALTH MODE) ──
+        # Logika jeda agar tidak terdeteksi DDOS
         if i < total - 1 and status != 403:
             time.sleep(random.uniform(0.3, 1.2))
             if (i + 1) % 50 == 0:
