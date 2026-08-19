@@ -85,26 +85,7 @@ def run(
     resume: bool = True,
     broker_batch_size: int | None = None,
 ) -> dict[str, Any]:
-    """Run the full pipeline once. Returns a summary dict with timing.
-
-    Parameters
-    ----------
-    tickers : list of plain tickers (e.g. ["BBCA", "BBRI"]).
-        If provided, overrides universe_mode.
-    universe_mode : str
-        One of: watchlist, idx30, lq45, idx80, all, liquid.
-        Ignored when ``tickers`` is provided.
-    price_period : yfinance period string, e.g. "1y", "6mo", "5y", "max".
-    fetch_broker_data : set False to skip the broker API.
-    resume : if True, skip tickers already stored for today.
-    broker_batch_size : if set, process broker API in batches of N with
-        a short pause between batches. Default None (no extra pauses).
-
-    Returns
-    -------
-    dict with keys: tickers, n_prices, n_broker, n_activity, elapsed_seconds,
-                    broker_skipped, broker_fetched, notes.
-    """
+    """Run the full pipeline once. Returns a summary dict with timing."""
     t0 = time.monotonic()
 
     # ── SKIP WEEKEND ──
@@ -121,7 +102,6 @@ def run(
         }
     # ── end skip weekend ──
 
-    # Resolve universe
     if tickers:
         syms = [t.upper() for t in tickers if t]
         mode_label = "custom"
@@ -137,9 +117,11 @@ def run(
 
     # 1) prices
     t1 = time.monotonic()
-    print(f"[pipeline] fetching prices from yfinance for {len(syms)} tickers...")
-    price_df = prices.fetch_history_many(syms, period=price_period)
-    n_prices = storage.upsert_prices(price_df)
+    print(f"[pipeline] fetching prices from IDX API for {len(syms)} tickers...")
+    
+    # UPDATED: Penarikan harga sekarang menangani batch-commit sendiri dan mengembalikan angka
+    n_prices = prices.fetch_history_many(syms, period=price_period)
+    
     t2 = time.monotonic()
     print(f"[pipeline]   -> {n_prices} price rows upserted in {t2-t1:.1f}s")
 
@@ -163,7 +145,6 @@ def run(
             t3 = time.monotonic()
 
             if broker_batch_size and len(target_syms) > broker_batch_size:
-                # Batch mode with pause between batches
                 all_results: dict = {}
                 for i in range(0, len(target_syms), broker_batch_size):
                     batch = target_syms[i:i + broker_batch_size]
@@ -227,10 +208,7 @@ def backfill_broker_history(
     price_period: str = "1y",
     refresh_prices: bool = True,
 ) -> dict[str, Any]:
-    """Backfill historical broker/bandar rows for event-study analysis.
-
-    Rate-limited and safe for large universes.
-    """
+    """Backfill historical broker/bandar rows for event-study analysis."""
     t0 = time.monotonic()
 
     if not broker_api.is_available():
@@ -254,15 +232,16 @@ def backfill_broker_history(
     n_prices = 0
     if refresh_prices:
         t1 = time.monotonic()
-        print(f"[pipeline] refreshing prices from yfinance for {len(syms)} tickers...")
-        price_df = prices.fetch_history_many(syms, period=price_period)
-        n_prices = storage.upsert_prices(price_df)
+        print(f"[pipeline] refreshing prices from IDX API for {len(syms)} tickers...")
+        
+        # UPDATED: Penarikan harga sekarang menangani batch-commit sendiri dan mengembalikan angka
+        n_prices = prices.fetch_history_many(syms, period=price_period)
+        
         print(f"[pipeline]   -> {n_prices} price rows in {time.monotonic()-t1:.1f}s")
 
     t2 = time.monotonic()
     print(f"[pipeline] backfilling broker/bandar history...")
     
-    # UPDATED: Penarikan API dan penyimpanan DB sekarang ditangani sekaligus secara bertahap
     n_broker, n_activity = broker_api.fetch_historical_broker_data(syms, start_date, end_date)
     
     t3 = time.monotonic()
