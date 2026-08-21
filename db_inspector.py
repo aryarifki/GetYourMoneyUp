@@ -102,6 +102,25 @@ def live_table_counts() -> pd.DataFrame:
     return df
 
 
+def live_batch_progress() -> pd.DataFrame:
+    """Mendapatkan jumlah hari/batch yang telah tersimpan per bulannya."""
+    engine = storage.engine
+    # Query ini akan mengekstrak bulan (YYYY-MM) dan menghitung jumlah tanggal unik di dalamnya.
+    q = """
+    SELECT 
+        TO_CHAR(date, 'YYYY-MM') AS target_month, 
+        COUNT(DISTINCT date) AS batches_done
+    FROM broker_flow
+    GROUP BY target_month
+    ORDER BY target_month DESC
+    LIMIT 4;
+    """
+    try:
+        return pd.read_sql(text(q), engine)
+    except Exception:
+        return pd.DataFrame()
+
+
 @st.cache_data(ttl=60)
 def table_date_ranges() -> pd.DataFrame:
     engine = storage.engine
@@ -228,16 +247,15 @@ else:
 
 ranges = table_date_ranges()
 
-# Merombak layout menjadi 6 kolom agar informasinya padat & jelas
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 with c1:
     st.metric("Tables", total_tables)
 with c2:
     st.metric("Total Rows", f"{total_rows:,}")
 with c3:
-    st.metric("Data Size (Tables)", table_data_size, help="Ukuran bersih khusus data tabel Anda.")
+    st.metric("Data Size (Tables)", table_data_size)
 with c4:
-    st.metric("Total DB Size", db_size_info["pretty"], help="Ukuran fisik absolut PostgreSQL di disk (termasuk cache, index, dan log internal).")
+    st.metric("Total DB Size", db_size_info["pretty"])
 with c5:
     tickers_row = ranges[ranges["table"] == "tickers"]
     active = int(tickers_row["active_tickers"].iloc[0]) if not tickers_row.empty else 0
@@ -259,11 +277,9 @@ with tab1:
 
     st.subheader("Row Counts & Storage Size")
     if not counts.empty:
-        # Hide the raw size_bytes column for cleaner UI
         display_counts = counts.drop(columns=["size_bytes"])
         st.dataframe(display_counts, use_container_width=True, hide_index=True)
 
-    # Visual: rows per table
     if not counts.empty:
         fig = px.bar(counts, x="table_name", y="row_count", text="row_count",
                      title="Row Count by Table", color="table_name")
@@ -294,9 +310,7 @@ with tab3:
         st.warning(f"Found {len(gaps)} missing dates (weekends excluded)")
         st.dataframe(gaps, use_container_width=True)
 
-    # Daily counts chart
-    st.subheader("Daily Row Counts (Last 90 days)")
-    daily = get_date_gaps(tbl_gap, None)  # reused helper for daily stats
+    daily = get_date_gaps(tbl_gap, None) 
     if not daily.empty and "n_tickers" in daily.columns:
         fig = px.bar(daily, x="date", y="n_tickers", title=f"{tbl_gap} — distinct tickers per day")
         st.plotly_chart(fig, use_container_width=True)
@@ -326,7 +340,7 @@ with tab5:
 
 with tab6:
     st.subheader("📦 Live Batch Monitor")
-    st.caption("Monitor exact row counts in real-time. Useful for tracking micro-batching progress during an active pipeline run.")
+    st.caption("Pantau penambahan baris secara persis (real-time) dan jumlah hari/batch yang sukses ditarik.")
     
     col1, col2 = st.columns([1, 4])
     with col1:
@@ -335,54 +349,57 @@ with tab6:
     
     placeholder = st.empty()
     
+    def render_live_view():
+        """Fungsi helper untuk merender ulang UI di dalam placeholder."""
+        live_df = live_table_counts()
+        batch_df = live_batch_progress()
+        
+        if "error" in live_df.columns:
+            st.error(f"Error reading DB: {live_df['error'].iloc[0]}")
+            return
+            
+        # 1. Tampilkan Baris (Rows)
+        mc1, mc2, mc3 = st.columns(3)
+        price_val = live_df[live_df['table_name'] == 'prices']['exact_count'].values
+        flow_val = live_df[live_df['table_name'] == 'broker_flow']['exact_count'].values
+        act_val = live_df[live_df['table_name'] == 'broker_activity']['exact_count'].values
+        
+        mc1.metric("Prices Rows", f"{int(price_val[0]) if len(price_val) else 0:,}")
+        mc2.metric("Broker Flow Rows", f"{int(flow_val[0]) if len(flow_val) else 0:,}")
+        mc3.metric("Broker Activity Rows", f"{int(act_val[0]) if len(act_val) else 0:,}")
+        
+        st.divider()
+        
+        # 2. Tampilkan Progress Batch Bulanan
+        st.markdown("**📅 Status Backfill Bulanan (Batch per Hari Perdagangan)**")
+        if not batch_df.empty:
+            b_cols = st.columns(len(batch_df))
+            for i, row in batch_df.iterrows():
+                m = row['target_month']
+                b = int(row['batches_done'])
+                
+                with b_cols[i]:
+                    # Asumsi rata-rata hari bursa adalah 22 hari per bulan
+                    progress_pct = min(b / 22.0, 1.0)
+                    st.metric(f"Bulan {m}", f"{b} / ~22 Hari")
+                    st.progress(progress_pct)
+        else:
+            st.caption("Belum ada data bulan yang tersimpan.")
+            
+        st.caption(f"Last updated: {time.strftime('%H:%M:%S')}")
+
+
     if auto_refresh:
         # Loop for live updates
         while True:
-            live_df = live_table_counts()
             with placeholder.container():
-                if "error" in live_df.columns:
-                    st.error(f"Error reading DB: {live_df['error'].iloc[0]}")
-                else:
-                    mc1, mc2, mc3 = st.columns(3)
-                    
-                    price_val = live_df[live_df['table_name'] == 'prices']['exact_count'].values
-                    flow_val = live_df[live_df['table_name'] == 'broker_flow']['exact_count'].values
-                    act_val = live_df[live_df['table_name'] == 'broker_activity']['exact_count'].values
-                    
-                    p_cnt = int(price_val[0]) if len(price_val) else 0
-                    f_cnt = int(flow_val[0]) if len(flow_val) else 0
-                    a_cnt = int(act_val[0]) if len(act_val) else 0
-                    
-                    mc1.metric("Prices Rows", f"{p_cnt:,}")
-                    mc2.metric("Broker Flow Rows", f"{f_cnt:,}")
-                    mc3.metric("Broker Activity Rows", f"{a_cnt:,}")
-                    
-                    st.caption(f"Last updated: {time.strftime('%H:%M:%S')}")
-            
+                render_live_view()
             time.sleep(refresh_rate)
     else:
         # Static render with manual refresh button
         if st.button("Click to Refresh Live Counts", type="primary"):
-            live_df = live_table_counts()
             with placeholder.container():
-                if "error" in live_df.columns:
-                    st.error(f"Error reading DB: {live_df['error'].iloc[0]}")
-                else:
-                    mc1, mc2, mc3 = st.columns(3)
-                    
-                    price_val = live_df[live_df['table_name'] == 'prices']['exact_count'].values
-                    flow_val = live_df[live_df['table_name'] == 'broker_flow']['exact_count'].values
-                    act_val = live_df[live_df['table_name'] == 'broker_activity']['exact_count'].values
-                    
-                    p_cnt = int(price_val[0]) if len(price_val) else 0
-                    f_cnt = int(flow_val[0]) if len(flow_val) else 0
-                    a_cnt = int(act_val[0]) if len(act_val) else 0
-                    
-                    mc1.metric("Prices Rows", f"{p_cnt:,}")
-                    mc2.metric("Broker Flow Rows", f"{f_cnt:,}")
-                    mc3.metric("Broker Activity Rows", f"{a_cnt:,}")
-                    
-                    st.caption(f"Last updated: {time.strftime('%H:%M:%S')}")
+                render_live_view()
         else:
             with placeholder.container():
                 st.info("Click the button above or enable Auto-Refresh to start monitoring.")
