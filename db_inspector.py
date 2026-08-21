@@ -113,7 +113,7 @@ def live_batch_progress() -> pd.DataFrame:
     FROM broker_flow
     GROUP BY target_month
     ORDER BY target_month DESC
-    LIMIT 4;
+    LIMIT 12;
     """
     try:
         return pd.read_sql(text(q), engine)
